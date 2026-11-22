@@ -52,7 +52,7 @@ class DeviceRegistryTest {
         }
 
         override suspend fun archiveDevice(id: String) {
-            devices[id]?.let { devices[id] = it.copy(status = DeviceStatus.archived.name) }
+            devices[id]?.let { devices[id] = it.copy(status = DeviceStatus.archived.name, peripheralId = null) }
         }
 
         override suspend fun setModel(id: String, model: String) {
@@ -74,7 +74,9 @@ class DeviceRegistryTest {
         }
 
         override suspend fun deviceForPeripheralId(peripheralId: String): PairedDeviceRow? =
-            devices.values.firstOrNull { it.peripheralId == peripheralId }
+            devices.values
+                .filter { it.peripheralId == peripheralId && it.status != DeviceStatus.archived.name }
+                .minByOrNull { if (it.status == DeviceStatus.active.name) 0 else 1 }
 
         override suspend fun setDayOwner(row: DayOwnershipRow) {
             owners[row.day] = row // INSERT OR REPLACE by day PK

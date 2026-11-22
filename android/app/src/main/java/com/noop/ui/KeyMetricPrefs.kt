@@ -43,8 +43,7 @@ enum class KeyMetric(val raw: String, @StringRes val titleRes: Int) {
 
         /** The original, hard-coded grid order — the default when the layout isn't customised. */
         val defaultOrder: List<KeyMetric> = listOf(
-            CHARGE, EFFORT, REST, HRV, RESTING_HR,
-            BLOOD_OXYGEN, RESPIRATORY, STEPS, WEIGHT, CALORIES,
+            HRV, RESTING_HR, RESPIRATORY, SKIN_TEMP, STEPS,
         )
     }
 }
@@ -63,7 +62,7 @@ object KeyMetricPrefs {
      *  fill bar. Display-only, default off (the Today-only compact ktile look). Set by the editor;
      *  key name is parity-ready for the macOS/iOS twin (@AppStorage "today.keyMetricsDetailed"). */
     fun detailed(context: Context): Boolean =
-        NoopPrefs.of(context).getBoolean(KEY_DETAILED, false)
+        NoopPrefs.of(context).getBoolean(KEY_DETAILED, true)
 
     fun setDetailed(context: Context, value: Boolean) {
         NoopPrefs.of(context).edit().putBoolean(KEY_DETAILED, value).apply()

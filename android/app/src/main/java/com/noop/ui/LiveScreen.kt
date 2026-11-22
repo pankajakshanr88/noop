@@ -364,6 +364,18 @@ fun LiveScreen(viewModel: AppViewModel, onManageDevices: () -> Unit = {}) {
             activeIsWhoop = activeIsWhoop, ouraBatteryPct = ouraBatteryPct)
         }
 
+        // WHOOP 5.0/MG live 100 Hz IMU step counter (T6/T7).
+        if (activeIsWhoop && (selectedModel == WhoopModel.WHOOP5_MG || live.whoop5Detected)) {
+            item {
+                LiveImuStepCounterCard(
+                    live = live,
+                    activeConnection = activeConnection,
+                    onToggle = { viewModel.setLiveImuStepsEnabled(it) },
+                    onReset = { viewModel.resetLiveImuSteps() },
+                )
+            }
+        }
+
         // Max HR + the top-zone entry threshold (read-only; manage coaching in Automations).
         item {
         MaxHrZoneCard(hrMax = profile.hrMax, zone5Bpm = zone5Bpm, coachingOn = zoneCoaching)
@@ -730,6 +742,74 @@ fun LiveScreen(viewModel: AppViewModel, onManageDevices: () -> Unit = {}) {
 }
 
 // MARK: - Console header
+
+@Composable
+private fun LiveImuStepCounterCard(
+    live: LiveState,
+    activeConnection: Boolean,
+    onToggle: (Boolean) -> Unit,
+    onReset: () -> Unit,
+) {
+    NoopCard {
+        Column(verticalArrangement = Arrangement.spacedBy(Metrics.gap), modifier = Modifier.fillMaxWidth()) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Metrics.gap),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Overline("WHOOP 5.0 100 Hz IMU")
+                    Text("Live Wrist Pedometer", style = NoopType.headline, color = Palette.textPrimary)
+                }
+                Switch(
+                    checked = live.liveImuStepsEnabled,
+                    onCheckedChange = onToggle,
+                    enabled = activeConnection,
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(Metrics.gap), modifier = Modifier.fillMaxWidth()) {
+                StatTile(
+                    modifier = Modifier.weight(1f),
+                    label = "Live Steps",
+                    value = live.liveImuSteps.toString(),
+                    accent = Palette.metricCyan,
+                )
+                StatTile(
+                    modifier = Modifier.weight(1f),
+                    label = "Cadence",
+                    value = live.liveImuCadenceSpm?.let { "$it spm" } ?: "—",
+                    accent = if (live.liveImuCadenceSpm != null) Palette.accent else Palette.textPrimary,
+                )
+            }
+            Text(
+                "${live.liveImuFrames}s of 100 Hz 6-axis IMU processed · higher band battery use while active",
+                style = NoopType.footnote,
+                color = Palette.textTertiary,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedButton(
+                onClick = onReset,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = live.liveImuSteps > 0 || live.liveImuFrames > 0,
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Palette.textSecondary),
+            ) {
+                Icon(
+                    Icons.Filled.Refresh,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp).padding(end = 4.dp),
+                )
+                Text(
+                    "Reset live steps",
+                    style = NoopType.captionNumber,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Clip,
+                )
+            }
+        }
+    }
+}
 
 /**
  * Read-only Max-HR + top-zone card. Max HR is the age-based value from Settings; the Zone 5 entry

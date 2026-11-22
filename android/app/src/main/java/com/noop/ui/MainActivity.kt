@@ -431,7 +431,7 @@ object NoopPrefs {
     const val KEY_FAST_HISTORY_SYNC = "noop.fastHistorySync"
 
     fun fastHistorySync(context: Context): Boolean =
-        of(context).getBoolean(KEY_FAST_HISTORY_SYNC, false)
+        of(context).getBoolean(KEY_FAST_HISTORY_SYNC, true)
 
     fun setFastHistorySync(context: Context, enabled: Boolean) {
         of(context).edit().putBoolean(KEY_FAST_HISTORY_SYNC, enabled).apply()
@@ -480,7 +480,7 @@ object NoopPrefs {
     const val KEY_FAST_LINK_PHY = "noop.fastLinkPhy"
 
     fun fastLinkPhy(context: Context): Boolean =
-        of(context).getBoolean(KEY_FAST_LINK_PHY, false)
+        of(context).getBoolean(KEY_FAST_LINK_PHY, true)
 
     fun setFastLinkPhy(context: Context, enabled: Boolean) {
         of(context).edit().putBoolean(KEY_FAST_LINK_PHY, enabled).apply()
@@ -1591,6 +1591,7 @@ fun NoopRoot() {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
                 appViewModel.ble.onForeground()
+                appViewModel.refreshHealthConnectOnForeground()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)

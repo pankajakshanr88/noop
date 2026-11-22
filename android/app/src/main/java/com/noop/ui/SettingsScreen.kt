@@ -1873,13 +1873,15 @@ fun SettingsScreen(
             // the Today launcher card with it, and cancels the daily brief (which otherwise keeps calling
             // a provider from the background and posting notifications, with no UI attached to reveal that
             // it is still running). The saved provider key is kept, so this is a flip and not a re-setup.
-            SettingsFormRow(label = uiString(R.string.l10n_settings_screen_ai_coach_130c3eab)) {
-                Switch(
-                    checked = BottomBarStyleStore.coachEnabled,
-                    onCheckedChange = { BottomBarStyleStore.setCoachEnabled(context, it) },
-                )
+            if (false) {
+                SettingsFormRow(label = uiString(R.string.l10n_settings_screen_ai_coach_130c3eab)) {
+                    Switch(
+                        checked = BottomBarStyleStore.coachEnabled,
+                        onCheckedChange = { BottomBarStyleStore.setCoachEnabled(context, it) },
+                    )
+                }
+                SettingsRowDivider()
             }
-            SettingsRowDivider()
             // #1836: which bottom-bar layout to draw. Default OFF — the shipped reserved slot. The
             // overlay lets a screen's own backdrop show through the bar's glass, which is what it was
             // built for, but it is app-shell layout no test can judge, so it ships switchable.
@@ -2679,18 +2681,20 @@ fun SettingsScreen(
             onToggle = { advancedOpen = !advancedOpen; SettingsDisclosurePrefs.write(NoopPrefs.of(context), advancedOpen) },
         ) {
         Column(verticalArrangement = Arrangement.spacedBy(Metrics.screenRowSpacing)) {
-        SettingsCard(
-            icon = Icons.Filled.CloudSync,
-            title = uiString(R.string.nav_self_hosted_push),
-            blurb = uiString(R.string.push_settings_row_detail),
-        ) {
-            NoopButton(
-                text = uiString(R.string.nav_self_hosted_push),
-                leadingIcon = Icons.Filled.CloudSync,
-                kind = NoopButtonKind.Secondary,
-                fullWidth = true,
-                onClick = onOpenSelfHostedPush,
-            )
+        if (false) {
+            SettingsCard(
+                icon = Icons.Filled.CloudSync,
+                title = uiString(R.string.nav_self_hosted_push),
+                blurb = uiString(R.string.push_settings_row_detail),
+            ) {
+                NoopButton(
+                    text = uiString(R.string.nav_self_hosted_push),
+                    leadingIcon = Icons.Filled.CloudSync,
+                    kind = NoopButtonKind.Secondary,
+                    fullWidth = true,
+                    onClick = onOpenSelfHostedPush,
+                )
+            }
         }
         // --- Experimental · WHOOP 5 / MG --- (hidden when the user is confidently on a 4.0, #22)
         // Developer-only 5/MG controls now live in Test Centre. Keep the implementation below during
@@ -3469,18 +3473,20 @@ fun SettingsScreen(
         // A nav row into the Test Centre: the single home for the diagnostic, log and test controls (spec
         // section 7). The strap log, recalibrate, scheduled export and experimental toggles also live there
         // on the same bindings, so this is a faster door to the full set without growing this screen.
-        SettingsCard(
-            icon = Icons.Filled.BugReport,
-            title = uiString(R.string.l10n_settings_screen_test_centre_37b36828),
-            blurb = "Turn on a test for the thing that's wrong, wear the strap, then tap Report. Your strap log, recalibrate, scheduled export and experimental probes all live here too.",
-        ) {
-            NoopButton(
-                text = uiString(R.string.l10n_settings_screen_open_test_centre_a7fbe4e9),
-                leadingIcon = Icons.Filled.BugReport,
-                kind = NoopButtonKind.Secondary,
-                fullWidth = true,
-                onClick = onOpenTestCentre,
-            )
+        if (false) {
+            SettingsCard(
+                icon = Icons.Filled.BugReport,
+                title = uiString(R.string.l10n_settings_screen_test_centre_37b36828),
+                blurb = "Turn on a test for the thing that's wrong, wear the strap, then tap Report. Your strap log, recalibrate, scheduled export and experimental probes all live here too.",
+            ) {
+                NoopButton(
+                    text = uiString(R.string.l10n_settings_screen_open_test_centre_a7fbe4e9),
+                    leadingIcon = Icons.Filled.BugReport,
+                    kind = NoopButtonKind.Secondary,
+                    fullWidth = true,
+                    onClick = onOpenTestCentre,
+                )
+            }
         }
 
         // --- Charge (Recovery) advanced ---

@@ -25,6 +25,7 @@ import android.os.ParcelUuid
 import android.os.SystemClock
 import android.util.Log
 import com.noop.NoopApplication
+import com.noop.analytics.LiveImuStepDetector
 import com.noop.data.HrRow
 import com.noop.data.InsertCounts
 import com.noop.data.RrRow
@@ -305,6 +306,13 @@ data class LiveState(
      *  a connected strap that keeps handing over nothing has this true regardless of live-HR status.
      *  Cleared on disconnect; re-derived from the next offload. Twin of macOS LiveState.sustainedEmptyOffload. */
     val sustainedEmptyOffload: Boolean = false,
+    /** T6 live 100 Hz IMU step counting (WHOOP 5.0/MG): user-enabled flag, credited live steps,
+     *  cadence (steps/min), and IMU frames processed. Driven by [LiveImuStepDetector] on realtime
+     *  raw-IMU frames; UI wiring is T7. */
+    val liveImuStepsEnabled: Boolean = false,
+    val liveImuSteps: Int = 0,
+    val liveImuCadenceSpm: Int? = null,
+    val liveImuFrames: Int = 0,
 ) {
     /** Set the fresh-packet [rr] AND append the valid intervals onto the bounded [rrRecent] rolling
      *  buffer (oldest fall off first). Non-positive sentinels are dropped from the rolling buffer.
@@ -1010,7 +1018,7 @@ class WhoopBleClient(
          * session (the durable strap_trim cursor means the next session resumes where we left off).
          * Generous (60s, not 20s) because the type-43 raw flood eats BLE airtime between chunks.
          */
-        private const val BACKFILL_IDLE_TIMEOUT_MS = 60_000L
+        private const val BACKFILL_IDLE_TIMEOUT_MS = 20_000L
         /** Deferral before the first connect-time offload, so SET_CLOCK/GET_DATA_RANGE round-trip first. */
         private const val INITIAL_BACKFILL_DELAY_MS = 1_500L
         /** 5/MG fail-open gate: how long to wait for a GET_DATA_RANGE SUCCESS before requesting
@@ -2641,6 +2649,55 @@ class WhoopBleClient(
         if (groundTruthImuSessionId == sessionId) groundTruthImuSessionId = null
     }
 
+    /** T6: pure 100 Hz IMU live step detector, fed from realtime raw-IMU frames while
+     *  [LiveState.liveImuStepsEnabled] is on. */
+    private val liveImuStepDetector = LiveImuStepDetector()
+
+    /** T6: enable/disable live 100 Hz IMU step counting. When enabling on a connected + bonded
+     *  WHOOP 5/MG, arms the realtime IMU producer (START_RAW_DATA + TOGGLE_IMU_MODE [1,1]) under the
+     *  same [groundTruthImuCommandAllowed] gate the ground-truth capture uses; the post-CLIENT_HELLO
+     *  bonded path re-arms it on reconnect while the flag stays on. When disabling, stops the producer
+     *  unless a ground-truth session owns it. */
+    @Synchronized
+    fun setLiveImuStepsEnabled(enabled: Boolean) {
+        if (enabled) {
+            if (connectedFamily == DeviceFamily.WHOOP5 && _state.value.connected && _state.value.bonded &&
+                gatt != null && cmdCharacteristic != null) {
+                groundTruthImuCommandAllowed = true
+                try {
+                    send(CommandNumber.START_RAW_DATA, byteArrayOf(1), withResponse = true)
+                    send(CommandNumber.TOGGLE_IMU_MODE, byteArrayOf(1, 1), withResponse = true)
+                } finally {
+                    groundTruthImuCommandAllowed = false
+                }
+            }
+            _state.update { it.copy(liveImuStepsEnabled = true) }
+            log("Live IMU step counting enabled")
+        } else {
+            _state.update { it.copy(liveImuStepsEnabled = false, liveImuCadenceSpm = null) }
+            if (connectedFamily == DeviceFamily.WHOOP5 && groundTruthImuSessionId == null &&
+                gatt != null && cmdCharacteristic != null) {
+                groundTruthImuCommandAllowed = true
+                try {
+                    send(CommandNumber.STOP_RAW_DATA, byteArrayOf(1), withResponse = true)
+                    send(CommandNumber.TOGGLE_IMU_MODE, byteArrayOf(1, 0), withResponse = true)
+                } finally {
+                    groundTruthImuCommandAllowed = false
+                }
+            }
+            log("Live IMU step counting disabled")
+        }
+    }
+
+    /** T6: zero the live step counter (detector + published state). */
+    @Synchronized
+    fun resetLiveImuSteps() {
+        val snap = liveImuStepDetector.reset()
+        _state.update {
+            it.copy(liveImuSteps = snap.totalSteps, liveImuCadenceSpm = snap.cadenceSpm, liveImuFrames = snap.framesProcessed)
+        }
+    }
+
     @Synchronized
     private fun recordGroundTruthImuFrame(frame: ByteArray) {
         if (frame.size <= 8) return
@@ -2695,7 +2752,9 @@ class WhoopBleClient(
         if (connectedFamily != DeviceFamily.WHOOP5 || replayedOffload || frame.size <= 8) return
         val type = frame[8].toInt() and 0xFF
         if (type != 43 && type != 51) return
-        if (groundTruthImuSessionId != null || PuffinExperiment.from(context).isCaptureEnabled) return
+        // T6: live IMU step counting owns the producer while enabled — the fail-safe must not stop it.
+        if (groundTruthImuSessionId != null || _state.value.liveImuStepsEnabled ||
+            PuffinExperiment.from(context).isCaptureEnabled) return
         val now = System.currentTimeMillis()
         if (now - groundTruthImuStoppedAtMs < 3_000L || now - unexpectedImuStopAtMs < 30_000L) return
         if (gatt == null || cmdCharacteristic == null) return
@@ -7879,6 +7938,17 @@ class WhoopBleClient(
                     val realtimeWantNow = screenWantsRealtime || continuousCaptureWantsNow()
                     wantsRealtime = realtimeWantNow
                     if (realtimeWantNow) { realtimeArmed = true; realtimeArmedThisLink = true; send(CommandNumber.TOGGLE_REALTIME_HR, byteArrayOf(1)) }
+                    // T6: re-arm the live IMU step producer on reconnect while the user flag is on.
+                    if (_state.value.liveImuStepsEnabled) {
+                        groundTruthImuCommandAllowed = true
+                        try {
+                            send(CommandNumber.START_RAW_DATA, byteArrayOf(1), withResponse = true)
+                            send(CommandNumber.TOGGLE_IMU_MODE, byteArrayOf(1, 1), withResponse = true)
+                        } finally {
+                            groundTruthImuCommandAllowed = false
+                        }
+                        log("Live IMU step counting re-armed after CLIENT_HELLO")
+                    }
                     // #2384: start the live-stream keep-alive HERE, on the hello-acked branch, exactly as the
                     // Swift twin does in its own `.whoop5` branch. Its only other Android caller is
                     // [runConnectHandshake], which is WHOOP4-only (the guard is a few lines below), and the
@@ -8186,6 +8256,19 @@ class WhoopBleClient(
                     noteUnbondedProbeFrame(parsed)
                     // A frame replayed as part of the historical offload (type 47/48/… during a backfill)
                     recordGroundTruthImuFrame(frame)
+                    // T6: feed live (non-offload) raw-IMU frames to the live step detector while enabled.
+                    if (!offloadFrame && _state.value.liveImuStepsEnabled) {
+                        Whoop5RawImu.decode(frame)?.let { imuFrame ->
+                            val snap = liveImuStepDetector.accept(imuFrame)
+                            _state.update {
+                                it.copy(
+                                    liveImuSteps = snap.totalSteps,
+                                    liveImuCadenceSpm = snap.cadenceSpm,
+                                    liveImuFrames = snap.framesProcessed,
+                                )
+                            }
+                        }
+                    }
                     // must not drive LIVE-only state (the charging pill). (PR #568 reimpl)
                     //
                     // NOT the same shape as iOS, despite what this said before. THIS side calls the handler

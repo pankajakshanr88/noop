@@ -78,24 +78,22 @@ class NoopGlanceWidget : GlanceAppWidget() {
 
 // Per-scheme widget colours (mirror the app palette; deepened gold/amber/orange on light for contrast
 // on the warm-paper card). The widget is a separate surface, so these are local — not Palette reads.
-private fun widgetSurface(dark: Boolean) = ColorProvider(if (dark) Color(0xFF0A1322) else Color(0xFFF4F1EA))
+private fun widgetSurface(dark: Boolean) = ColorProvider(if (dark) Color(0xFF0A0C10) else Color(0xFFF4F1EA))
 private fun widgetTextPrimary(dark: Boolean) = ColorProvider(if (dark) Color(0xFFF4F6F8) else Color(0xFF1A2230))
 private fun widgetTextSecondary(dark: Boolean) = ColorProvider(if (dark) Color(0xFF8A94A4) else Color(0xFF7C8696))
 
-/** Recovery-band colour, the app-wide 67 / 34 cuts (RecoveryScorer.band); deepened on light. Charge and
- *  Rest both read on the recovery band in the app, so they share this. */
+/** Recovery-band colour, the app-wide 67 / 34 cuts (RecoveryScorer.band); WHOOP green / yellow / red. */
 private fun bandColor(recovery: Int, dark: Boolean): ColorProvider = ColorProvider(
     when {
-        recovery >= 67 -> if (dark) Color(0xFFE8B84B) else Color(0xFFB07D17)
-        recovery >= 34 -> if (dark) Color(0xFFD98A3D) else Color(0xFFC2792E)
-        else -> if (dark) Color(0xFFE0662F) else Color(0xFFC84E1E)
+        recovery >= 67 -> if (dark) Color(0xFF03E095) else Color(0xFF0B9D62)
+        recovery >= 34 -> if (dark) Color(0xFFF9DF4A) else Color(0xFFC28E26)
+        else -> if (dark) Color(0xFFE0463C) else Color(0xFFC84E1E)
     },
 )
 
-/** Effort tint — the app's strain colour (Palette.strain066), a distinct teal so Effort doesn't read as
- *  another recovery band. Deepened on light for contrast on the warm-paper card. (#516) */
+/** Effort / steps accent — crisp cyan-blue on dark OLED. */
 private fun effortColor(dark: Boolean): ColorProvider =
-    ColorProvider(if (dark) Color(0xFF4FB6A8) else Color(0xFF2E7D74))
+    ColorProvider(if (dark) Color(0xFF4090E0) else Color(0xFF2E7D74))
 
 @Composable
 private fun WidgetContent(snap: WidgetSnapshot, dark: Boolean) {
@@ -112,39 +110,56 @@ private fun WidgetContent(snap: WidgetSnapshot, dark: Boolean) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // The three top scores in one row, Charge centred + enlarged (the app's hero order Rest · Charge ·
-        // Effort). Each cell is honest-null until that score exists — never a fabricated number. (#516)
+        val sleepText = snap.sleepMin?.let { mins -> "${mins / 60}h${mins % 60}m" }
+            ?: snap.restPct?.let { "$it%" }
+            ?: "—"
+        val chargeText = snap.recoveryPct?.let { "$it%" } ?: "—"
+        val stepsText = snap.steps?.let { java.text.NumberFormat.getIntegerInstance().format(it) }
+            ?: snap.effortPct?.let { "$it%" }
+            ?: "—"
         Row(
             modifier = GlanceModifier.fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalAlignment = Alignment.Bottom,
         ) {
-            ScoreCell(
-                label = uiString(R.string.l10n_noop_glance_widget_rest_cbaaa181),
-                pct = snap.restPct,
-                color = snap.restPct?.let { bandColor(it, dark) } ?: textSecondary,
-                valueSize = 22.sp,
+            TextScoreCell(
+                label = "SLEEP",
+                value = sleepText,
+                color = snap.restPct?.let { bandColor(it, dark) } ?: textPrimary,
+                valueSize = 18.sp,
                 textSecondary = textSecondary,
                 modifier = GlanceModifier.defaultWeight(),
             )
-            ScoreCell(
+            TextScoreCell(
                 label = uiString(R.string.l10n_noop_glance_widget_charge_49a8cb83),
-                pct = snap.recoveryPct,
+                value = chargeText,
                 color = snap.recoveryPct?.let { bandColor(it, dark) } ?: textSecondary,
-                valueSize = 30.sp,
+                valueSize = 26.sp,
                 textSecondary = textSecondary,
                 modifier = GlanceModifier.defaultWeight(),
             )
-            ScoreCell(
-                label = uiString(R.string.l10n_noop_glance_widget_effort_660752e7),
-                pct = snap.effortPct,
-                color = snap.effortPct?.let { effortColor(dark) } ?: textSecondary,
-                valueSize = 22.sp,
+            TextScoreCell(
+                label = if (snap.steps != null) "STEPS" else uiString(R.string.l10n_noop_glance_widget_effort_660752e7),
+                value = stepsText,
+                color = if (snap.steps != null) effortColor(dark) else snap.effortPct?.let { effortColor(dark) } ?: textSecondary,
+                valueSize = 18.sp,
                 textSecondary = textSecondary,
                 modifier = GlanceModifier.defaultWeight(),
             )
         }
-        Spacer(modifier = GlanceModifier.height(8.dp))
+        Spacer(modifier = GlanceModifier.height(6.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = snap.hrvMs?.let { "HRV ${it}ms" } ?: "HRV —",
+                style = TextStyle(color = textPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium),
+            )
+            Spacer(modifier = GlanceModifier.width(10.dp))
+            Text(
+                text = snap.restingHr?.let { "RHR $it" } ?: "RHR —",
+                style = TextStyle(color = textPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium),
+            )
+        }
+        Spacer(modifier = GlanceModifier.height(4.dp))
         // The ♥ and ⚡ are characters inside the text, not labelled images, so TalkBack reads whatever
         // the glyph happens to be called - or skips it - and the metric arrives as a bare number with no
         // name and no unit. The compact widget is not the accessible counterexample it looks like: only
@@ -205,9 +220,9 @@ private fun WidgetContent(snap: WidgetSnapshot, dark: Boolean) {
  *  "—" in the secondary colour while that score is still null, so an unscored cell reads honestly rather
  *  than as a broken zero). (#516) */
 @Composable
-private fun ScoreCell(
+private fun TextScoreCell(
     label: String,
-    pct: Int?,
+    value: String,
     color: ColorProvider,
     valueSize: androidx.compose.ui.unit.TextUnit,
     textSecondary: ColorProvider,
@@ -222,7 +237,7 @@ private fun ScoreCell(
             style = TextStyle(color = textSecondary, fontSize = 10.sp, fontWeight = FontWeight.Medium),
         )
         Text(
-            text = pct?.let { "$it%" } ?: "—",
+            text = value,
             style = TextStyle(color = color, fontSize = valueSize, fontWeight = FontWeight.Bold),
         )
     }

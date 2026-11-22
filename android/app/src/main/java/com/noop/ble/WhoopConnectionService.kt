@@ -527,6 +527,11 @@ class WhoopConnectionService : Service() {
                     } else {
                         null
                     }
+                    val todayRow = com.noop.ui.resolveTodayRow(
+                        dayState.days,
+                        com.noop.ui.logicalDayKeyNow(),
+                        java.time.LocalDate.now().toString(),
+                    )
                     WidgetSnapshotStore.push(
                         this@WhoopConnectionService,
                         WidgetSnapshot(
@@ -534,8 +539,8 @@ class WhoopConnectionService : Service() {
                             // Rest = the sleep_performance composite from the anchor row's banked stage
                             // figures (pure, honest-null until last night is scored); Effort = the 0-100
                             // strain. Widget-only carry, so it shows the same day as Today. (#516/#911)
-                            restPct = dayState.widgetRest,
-                            effortPct = dayState.widgetEffort,
+                            restPct = dayState.widgetRest ?: todayRow?.let { com.noop.analytics.RestScorer.restFromDaily(it)?.roundToInt() },
+                            effortPct = dayState.widgetEffort ?: todayRow?.strain?.roundToInt(),
                             heartRate = state.heartRate,
                             // The ACTIVE device's charge (#2075). This service is the widget's
                             // HEARTBEAT, so publishing the WHOOP's field here would have overwritten the
@@ -551,6 +556,10 @@ class WhoopConnectionService : Service() {
                             connected = state.connected,
                             stressSeries = stressCurve?.points ?: emptyList(),
                             stressDay = stressCurve?.epochDay,
+                            hrvMs = todayRow?.avgHrv?.roundToInt(),
+                            restingHr = todayRow?.restingHr,
+                            sleepMin = todayRow?.totalSleepMin?.roundToInt(),
+                            steps = ((todayRow?.steps ?: 0) + state.liveImuSteps).takeIf { it > 0 },
                             updatedAtMs = nowMs,
                         ),
                     )

@@ -471,12 +471,23 @@ fun TodayScreen(
     val dayCycleMode = NoopPrefs.dayCycleMode(LocalContext.current)
     // Steps alone use the physiological sleep-onset cycle. Every other field stays on the dashboard's
     // existing logical-day row; past-day navigation continues to show the persisted historical cycle row.
-    val stepResolvedDisplayMetric = remember(displayMetric, activeDayCycle, selectedDayOffset, dayCycleMode) {
+    val stepResolvedDisplayMetric = remember(
+        displayMetric,
+        activeDayCycle,
+        selectedDayOffset,
+        dayCycleMode,
+        live.liveImuSteps,
+    ) {
         val cycleSteps = activeDayCycle?.steps
-        if (selectedDayOffset == 0 && dayCycleMode == DayCycleMode.SLEEP_ONSET && cycleSteps != null) {
+        val base = if (selectedDayOffset == 0 && dayCycleMode == DayCycleMode.SLEEP_ONSET && cycleSteps != null) {
             displayMetric?.copy(steps = cycleSteps)
         } else {
             displayMetric
+        }
+        if (selectedDayOffset == 0 && live.liveImuSteps > 0) {
+            base?.copy(steps = (base.steps ?: 0) + live.liveImuSteps)
+        } else {
+            base
         }
     }
     // Keep the explicit calendar date visible alongside Today/Yesterday so the logical-day remap stays
@@ -1546,7 +1557,10 @@ fun TodayScreen(
                 ChargeLegacyRrGapNote()
             // #827: NeedsStrap ALWAYS shows (a today-blocking state, not a recurring nag), except behind
             // the #1505 note above, which names the SAME blank's actual cause rather than restating it.
-            } else if (selectedDayOffset == 0 && scoreState is ScoreState.NeedsStrap) {
+            } else if (selectedDayOffset == 0 && scoreState is ScoreState.NeedsStrap &&
+                !live.connected && !live.backfilling &&
+                restScoreForDay == null && displayMetric?.restingHr == null
+            ) {
                 ScoreStateNote(scoreState)
             }
             // The carried "Latest sleep · <date>" / "Last night · <date>" note. iOS has NOTHING in this slot,
@@ -1662,15 +1676,14 @@ fun TodayScreen(
                         (it != DashboardCard.COACH || BottomBarStyleStore.coachEnabled)
             }
             val sectionVisible = when (section) {
-                TodaySection.LIVE_SESSION ->
-                    selectedDayOffset == 0 && (liveSessionsEnabled || activeLiveSession != null)
+                TodaySection.LIVE_SESSION -> false
                 TodaySection.YOUR_CARDS ->
                     selectedDayOffset == 0 && visibleDashboardCards.isNotEmpty()
                 TodaySection.MENSTRUAL_CYCLE ->
                     selectedDayOffset == 0 && !cycleHidden &&
                         (cycleOptInApplies(profileStore.sex) || cycleEnabled || periodStarts.isNotEmpty())
-                TodaySection.JOURNAL ->
-                    selectedDayOffset == 0 && journalReminderOn
+                TodaySection.JOURNAL -> false
+                TodaySection.RECOVERY_VITALS -> false
                 TodaySection.ADDED_CARDS ->
                     selectedDayOffset == 0 && enabledHostedCards.isNotEmpty()
                 else -> true
@@ -6317,7 +6330,11 @@ private fun LiquidKeyTile(
     val base = if (onClick != null) {
         modifier
             .liquidPress(interaction)
-            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .clickable(
+                interactionSource = interaction,
+                indication = androidx.compose.foundation.LocalIndication.current,
+                onClick = onClick,
+            )
     } else {
         modifier
     }
@@ -6350,6 +6367,14 @@ private fun LiquidKeyTile(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
+            if (onClick != null) {
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = Palette.textTertiary,
+                    modifier = Modifier.size(12.dp),
+                )
+            }
         }
         Row(verticalAlignment = Alignment.Bottom) {
             Text(
@@ -7215,7 +7240,7 @@ private fun OverviewHRChart(
                     if (px != null) {
                         val py = yForBpm(peak.avgBpm)
                         WorkoutGlyph(
-                            icon = sportIcon(w.sport),
+                            icon = sportIcon(w),
                             modifier = Modifier.glyphOffset(px, py, plotW, plotH, density),
                         )
                     }
@@ -7325,6 +7350,7 @@ private fun TodayWorkoutsSection(workouts: List<WorkoutRow>, onSelect: (WorkoutR
     Column(verticalArrangement = Arrangement.spacedBy(Metrics.gap)) {
         feed.forEach { workout ->
             val interaction = remember(workout.startTs, workout.source) { MutableInteractionSource() }
+            val isPump = isPumpWorkout(workout)
             StatTile(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -7338,9 +7364,11 @@ private fun TodayWorkoutsSection(workouts: List<WorkoutRow>, onSelect: (WorkoutR
                 label = WorkoutEditing.displaySport(workout.sport),
                 value = localizedMetricValue(workoutDuration(workout)),
                 caption = workoutCaption(workout),
-                accent = workout.strain?.let { Palette.effortTint(it / StrainScorer.maxStrain) } ?: Palette.textPrimary,
-                delta = workout.energyKcal?.let { "${it.roundToInt()} kcal" },
-                deltaColor = Palette.metricAmber,
+                accent = workout.strain?.let { Palette.effortTint(it / StrainScorer.maxStrain) }
+                    ?: if (isPump) Palette.zone2 else Palette.textPrimary,
+                delta = workout.energyKcal?.let { "${it.roundToInt()} kcal" }
+                    ?: if (isPump) "PUMP" else null,
+                deltaColor = if (workout.energyKcal != null) Palette.metricAmber else Palette.zone2,
             )
         }
     }
@@ -8033,15 +8061,21 @@ private fun workoutDuration(row: WorkoutRow): String {
     }
 }
 
-/** "d MMM · HH:mm–HH:mm" (#157); start-only when the end isn't after the start (zero/unknown span). */
-private fun workoutCaption(row: WorkoutRow): String {
+/**
+ * "d MMM · HH:mm–HH:mm" (#157); start-only when the end isn't after the start (zero/unknown span).
+ * For Pump workouts carrying a volume/set summary in notes, prepends the summary so it stays
+ * visible before any single-line ellipsis on narrow phones.
+ */
+internal fun workoutCaption(row: WorkoutRow): String {
     val date = workoutDateFmt.format(Instant.ofEpochSecond(row.startTs))
     val start = workoutTimeFmt.format(Instant.ofEpochSecond(row.startTs))
-    return if (row.endTs > row.startTs) {
+    val timeSpan = if (row.endTs > row.startTs) {
         "$date · $start - ${workoutTimeFmt.format(Instant.ofEpochSecond(row.endTs))}"
     } else {
         "$date · $start"
     }
+    val pumpSummary = pumpVolumeSummary(row)
+    return if (pumpSummary != null) "$pumpSummary · $timeSpan" else timeSpan
 }
 
 private fun grouped(value: Int): String =

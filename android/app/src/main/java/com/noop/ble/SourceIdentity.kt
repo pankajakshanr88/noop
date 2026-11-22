@@ -32,7 +32,12 @@ object SourceIdentity {
      */
     fun resolve(address: String?, rows: List<PairedDeviceRow>, currentId: String): String? {
         if (address.isNullOrBlank()) return null
-        val row = rows.firstOrNull { it.peripheralId?.equals(address, ignoreCase = true) == true }
+        val matching = rows.filter {
+            it.status != "archived" && it.peripheralId?.equals(address, ignoreCase = true) == true
+        }
+        val row = matching.firstOrNull { it.status == "active" && isWhoop(it) }
+            ?: matching.firstOrNull { isWhoop(it) }
+            ?: matching.firstOrNull()
             ?: return null
         if (!isWhoop(row) || row.id == currentId) return null
         return row.id

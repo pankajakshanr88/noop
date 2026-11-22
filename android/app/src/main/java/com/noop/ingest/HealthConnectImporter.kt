@@ -139,7 +139,7 @@ object HealthConnectImporter {
     }
 
     internal val ALL_CATEGORIES: Set<ImportCategory> = ImportCategory.entries.toSet()
-    internal val DEFAULT_CATEGORIES: Set<ImportCategory> = setOf(ImportCategory.RECOVERY)
+    internal val DEFAULT_CATEGORIES: Set<ImportCategory> = setOf(ImportCategory.RECOVERY, ImportCategory.ACTIVITY)
 
     /** Every supported read permission. Kept as the compatibility/all-capabilities view. */
     val PERMISSIONS: Set<String> = permissionsFor(ALL_CATEGORIES)
@@ -566,7 +566,7 @@ object HealthConnectImporter {
                         strain = null,
                         distanceM = null,
                         zonesJSON = null,
-                        notes = r.title,
+                        notes = r.notes?.trim()?.takeIf { it.isNotEmpty() } ?: r.title,
                         routePolyline = routePolyline,
                     )
                 )

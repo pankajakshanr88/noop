@@ -90,4 +90,27 @@ class SourceIdentityTest {
         assertEquals(WhoopBleClient.DEFAULT_DEVICE_ID,
             SourceIdentity.resolve("AA:BB:CC:DD:EE:03", listOf(legacy), currentId = "oura-abc"))
     }
+
+    /** When an archived legacy row and an active WHOOP row share the same MAC, the active row wins. */
+    @Test
+    fun `active WHOOP row wins over archived legacy row with same address`() {
+        val archived = row(WhoopBleClient.DEFAULT_DEVICE_ID, "WHOOP", "AA:BB:CC:DD:EE:04")
+            .copy(status = "archived")
+        val active = row("whoop-5C00398023", "WHOOP", "AA:BB:CC:DD:EE:04")
+            .copy(status = "active")
+        assertEquals(
+            "whoop-5C00398023",
+            SourceIdentity.resolve("AA:BB:CC:DD:EE:04", listOf(archived, active), currentId = WhoopBleClient.DEFAULT_DEVICE_ID),
+        )
+    }
+
+    /** An archived ("Removed") row must never claim incoming BLE samples, even if it is the only match. */
+    @Test
+    fun `archived row is never resolved`() {
+        val archived = row(WhoopBleClient.DEFAULT_DEVICE_ID, "WHOOP", "AA:BB:CC:DD:EE:05")
+            .copy(status = "archived")
+        assertNull(
+            SourceIdentity.resolve("AA:BB:CC:DD:EE:05", listOf(archived), currentId = "whoop-5C00398023"),
+        )
+    }
 }

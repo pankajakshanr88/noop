@@ -28,15 +28,12 @@ class KeyMetricSkinTempTest {
         assertEquals("skinTemp", KeyMetric.SKIN_TEMP.raw)
     }
 
-    @Test fun notInDefaultOrder() {
-        assertFalse(KeyMetric.defaultOrder.contains(KeyMetric.SKIN_TEMP))
+    @Test fun inDefaultOrder() {
+        assertTrue(KeyMetric.defaultOrder.contains(KeyMetric.SKIN_TEMP))
     }
 
-    @Test fun blankLayoutStillExcludesIt() {
-        // A fresh install (blank saved layout) decodes to defaultOrder, which must not have picked up
-        // the new case — the whole point of adding it to `entries`/CaseIterable without touching
-        // defaultOrder.
-        assertTrue(KeyMetricPrefs.decodeEnabled("").none { it == KeyMetric.SKIN_TEMP })
+    @Test fun blankLayoutIncludesSkinTemp() {
+        assertTrue(KeyMetricPrefs.decodeEnabled("").any { it == KeyMetric.SKIN_TEMP })
     }
 
     private fun day(skinTempDevC: Double?) =

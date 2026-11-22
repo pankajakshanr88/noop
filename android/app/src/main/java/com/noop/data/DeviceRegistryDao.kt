@@ -44,7 +44,7 @@ interface DeviceRegistryDao {
     suspend fun touchLastSeen(id: String, now: Long)
 
     /** Archive a device (keeps the row + its samples — invariant I4). */
-    @Query("UPDATE pairedDevice SET status = 'archived' WHERE id = :id")
+    @Query("UPDATE pairedDevice SET status = 'archived', peripheralId = NULL WHERE id = :id")
     suspend fun archiveDevice(id: String)
 
     /** Rename a device. A null/empty nickname clears it so the UI falls back to brand+model. Mirrors the
@@ -65,7 +65,7 @@ interface DeviceRegistryDao {
 
     /** The paired device whose [peripheralId] matches, or null if none — so a strap discovered by its MAC
      *  address can be resolved back to its registry row. Twin of the Swift store's `deviceForPeripheralId`. */
-    @Query("SELECT * FROM pairedDevice WHERE peripheralId = :peripheralId LIMIT 1")
+    @Query("SELECT * FROM pairedDevice WHERE peripheralId = :peripheralId AND status != 'archived' ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END LIMIT 1")
     suspend fun deviceForPeripheralId(peripheralId: String): PairedDeviceRow?
 
     // MARK: deleteAllData — clear one device's recordings across every deviceId-keyed table.

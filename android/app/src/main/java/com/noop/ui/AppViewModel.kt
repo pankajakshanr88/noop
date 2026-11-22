@@ -1115,7 +1115,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     // right after the rollover and never re-surfaces a stale scored row AS today. Only the
                     // widget reads the anchor here (the notification's honest-null contract lives in the
                     // service), keeping the two symmetric.
+                    val todayRow = resolveTodayRow(days, logicalKey, localKey)
                     val anchorRow = widgetAnchorRow(days, logicalKey, localKey)
+                    val vitalsRow = todayRow ?: anchorRow
                     // #2040: today's stress curve for the stress widget. Do not even fingerprint the
                     // day's HR when nobody has placed one; scoring is the only expensive widget field.
                     // Null also leaves whatever curve is already stored alone, so a newly placed widget
@@ -1131,8 +1133,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                             recoveryPct = anchorRow?.recovery?.roundToInt(),
                             // Rest = the sleep_performance composite from THIS row's banked stage figures
                             // (pure, honest-null until last night is scored); Effort = the 0–100 strain. (#516)
-                            restPct = anchorRow?.let { RestScorer.restFromDaily(it)?.roundToInt() },
-                            effortPct = anchorRow?.strain?.roundToInt(),
+                            restPct = vitalsRow?.let { RestScorer.restFromDaily(it)?.roundToInt() },
+                            effortPct = vitalsRow?.strain?.roundToInt(),
                             heartRate = live.heartRate,
                             // The ACTIVE device's charge (#2075): a ring reports its own and does not
                             // funnel into live.batteryPct, so publishing that put the strap's number on
@@ -1151,6 +1153,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                             connected = live.connected,
                             stressSeries = stressCurve?.points ?: emptyList(),
                             stressDay = stressCurve?.epochDay,
+                            hrvMs = vitalsRow?.avgHrv?.roundToInt(),
+                            restingHr = vitalsRow?.restingHr,
+                            sleepMin = vitalsRow?.totalSleepMin?.roundToInt(),
+                            steps = ((vitalsRow?.steps ?: 0) + live.liveImuSteps).takeIf { it > 0 },
                             updatedAtMs = System.currentTimeMillis(),
                         ),
                     )
@@ -2642,6 +2648,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private var hcSyncInFlight = false
+    private var hcLastForegroundSyncAttemptMs = 0L
+
     /**
      * Foreground catch-up import: when auto-sync is on and the last sync is older than the chosen
      * interval (or [force]), pull from Health Connect now. Health Connect background reads are
@@ -2654,28 +2663,71 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val last = _hcLastSync.value
         val now = System.currentTimeMillis()
         if (!force && last != 0L && now - last < intervalMs) return
+        if (hcSyncInFlight) return
+        hcSyncInFlight = true
+        hcLastForegroundSyncAttemptMs = now
         viewModelScope.launch {
-            val ran = withContext(Dispatchers.IO) {
-                if (HealthConnectImporter.sdkStatus(appContext) != HealthConnectClient.SDK_AVAILABLE) {
-                    return@withContext false
+            try {
+                val ran = withContext(Dispatchers.IO) { runHealthConnectImportIfPermitted() }
+                if (ran) {
+                    val t = System.currentTimeMillis()
+                    NoopPrefs.setHcLastSync(appContext, t)
+                    _hcLastSync.value = t
+                    loadWorkouts()
                 }
-                val granted = runCatching {
-                    HealthConnectImporter.client(appContext).permissionController.getGrantedPermissions()
-                }.getOrDefault(emptySet())
-                val selectedPermissions = HealthConnectImporter.permissionsFor(
-                    HealthConnectImporter.selectedCategories(appContext),
-                )
-                // Partial permissions are fine (#150): auto-import as long as at least one type is granted.
-                if (granted.none { it in selectedPermissions }) return@withContext false
-                // Pass the profile height so the importer can derive BMI (Health Connect has no BMI record).
-                runCatching { HealthConnectImporter.import(appContext, repository, profileStore.heightCm) }.isSuccess
-            }
-            if (ran) {
-                val t = System.currentTimeMillis()
-                NoopPrefs.setHcLastSync(appContext, t)
-                _hcLastSync.value = t
+            } finally {
+                hcSyncInFlight = false
             }
         }
+    }
+
+    /**
+     * Instant Health Connect auto-import on app foreground resume: throttled to at most once every
+     * 60 seconds, gated on [NoopPrefs.hcAutoSync] plus [HealthConnectClient.SDK_AVAILABLE] and at
+     * least one granted selected permission. Calls [loadWorkouts] on completion so a workout just
+     * finished in Pump shows up in NOOP within seconds of opening NOOP.
+     */
+    fun refreshHealthConnectOnForeground() {
+        val autoSyncEnabled = NoopPrefs.hcAutoSync(appContext)
+        val now = System.currentTimeMillis()
+        if (!shouldRunForegroundHcSync(
+                autoSyncEnabled = autoSyncEnabled,
+                inFlight = hcSyncInFlight,
+                lastAttemptMs = hcLastForegroundSyncAttemptMs,
+                nowMs = now,
+            )
+        ) return
+        hcSyncInFlight = true
+        hcLastForegroundSyncAttemptMs = now
+        viewModelScope.launch {
+            try {
+                val ran = withContext(Dispatchers.IO) { runHealthConnectImportIfPermitted() }
+                if (ran) {
+                    val t = System.currentTimeMillis()
+                    NoopPrefs.setHcLastSync(appContext, t)
+                    _hcLastSync.value = t
+                    loadWorkouts()
+                }
+            } finally {
+                hcSyncInFlight = false
+            }
+        }
+    }
+
+    private suspend fun runHealthConnectImportIfPermitted(): Boolean {
+        if (HealthConnectImporter.sdkStatus(appContext) != HealthConnectClient.SDK_AVAILABLE) {
+            return false
+        }
+        val granted = runCatching {
+            HealthConnectImporter.client(appContext).permissionController.getGrantedPermissions()
+        }.getOrDefault(emptySet())
+        val selectedPermissions = HealthConnectImporter.permissionsFor(
+            HealthConnectImporter.selectedCategories(appContext),
+        )
+        // Partial permissions are fine (#150): auto-import as long as at least one type is granted.
+        if (granted.none { it in selectedPermissions }) return false
+        // Pass the profile height so the importer can derive BMI (Health Connect has no BMI record).
+        return runCatching { HealthConnectImporter.import(appContext, repository, profileStore.heightCm) }.isSuccess
     }
 
     /** How many screens currently want the live HR stream (Live, Health Monitor, …). The stream stays
@@ -2698,6 +2750,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         realtimeWanters = (realtimeWanters - 1).coerceAtLeast(0)
         if (realtimeWanters == 0) ble.stopRealtime()
     }
+
+    /** T6: enable/disable the live 100 Hz IMU step counter (WHOOP 5.0/MG). Thin pass-through to
+     *  [WhoopBleClient.setLiveImuStepsEnabled]; UI wiring is T7. */
+    fun setLiveImuStepsEnabled(enabled: Boolean) = ble.setLiveImuStepsEnabled(enabled)
+
+    /** T6: zero the live step counter. Thin pass-through to [WhoopBleClient.resetLiveImuSteps]. */
+    fun resetLiveImuSteps() = ble.resetLiveImuSteps()
 
     /** Refresh the battery reading. Reads the standard 0x2A19 characteristic (works on 5/MG, where the
      *  proprietary command is dropped) and also fires the legacy command on WHOOP 4. */
@@ -3411,3 +3470,29 @@ internal fun elapsedClock(elapsedS: Long): String {
  */
 internal fun resolveSelectedModel(recorded: WhoopModel?, remembered: WhoopModel?): WhoopModel =
     recorded ?: remembered ?: WhoopModel.WHOOP4
+
+/** Minimum gap between foreground Health Connect auto-import attempts (60 seconds). */
+internal const val HC_FOREGROUND_THROTTLE_MS: Long = 60_000L
+
+/**
+ * Pure throttle gate for foreground Health Connect auto-import (`refreshHealthConnectOnForeground`):
+ * - requires [autoSyncEnabled]
+ * - blocks if an import is already [inFlight]
+ * - throttles to at most once every [throttleMs] (default 60s) since [lastAttemptMs]
+ *   (0L = never attempted in this process, so the first resume runs immediately; backwards wall-clock
+ *   jumps are not wedged).
+ */
+internal fun shouldRunForegroundHcSync(
+    autoSyncEnabled: Boolean,
+    inFlight: Boolean,
+    lastAttemptMs: Long,
+    nowMs: Long,
+    throttleMs: Long = HC_FOREGROUND_THROTTLE_MS,
+): Boolean {
+    if (!autoSyncEnabled || inFlight) return false
+    if (lastAttemptMs > 0L) {
+        val elapsed = nowMs - lastAttemptMs
+        if (elapsed in 0 until throttleMs) return false
+    }
+    return true
+}

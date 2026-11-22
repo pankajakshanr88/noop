@@ -1833,8 +1833,8 @@
         <item quantity="other">%1$d chunks</item>
     </plurals>
     <plurals name="sync_chip_pages_behind_count">
-        <item quantity="one">%1$d page behind at connect</item>
-        <item quantity="other">%1$d pages behind at connect</item>
+        <item quantity="one">%1$dp</item>
+        <item quantity="other">%1$dp</item>
     </plurals>
     <string name="l10n_today_screen_sync_chip_synced_desc_4d255944">Strap history synced %1$s ago</string>
     <string name="l10n_today_screen_sync_chip_experimental_desc_3de06a70">Connected; strap history sync is experimental on this strap</string>
@@ -1851,7 +1851,7 @@
     <string name="l10n_today_screen_steps_cdde4f20">Steps</string>
     <string name="l10n_today_screen_strain_79fe380e">Strain</string>
     <string name="l10n_today_screen_synced_from_2aa7258b">Synced from</string>
-    <string name="l10n_today_screen_synthesis_876bc749">SYNTHESIS</string>
+    <string name="l10n_today_screen_synthesis_876bc749">DAILY SUMMARY</string>
     <string name="l10n_today_screen_unitformatter_effortdisplay_strain_effortscale_effort_53dbd951">%1$s Effort</string>
     <string name="l10n_today_screen_value_bpm_8f3a90c3">%1$s bpm</string>
     <string name="l10n_today_screen_visavg_8c9a4746">%1$s</string>
@@ -2311,7 +2311,7 @@
     <!-- Home/Today localization boundary: semantic helpers resolve these at the Compose edge. -->
     <string name="today_section_hero">Charge / Effort / Rest</string>
     <string name="today_section_live_session">Start session</string>
-    <string name="today_section_synthesis">Synthesis</string>
+    <string name="today_section_synthesis">Daily Summary</string>
     <string name="today_section_key_metrics">Key Metrics</string>
     <string name="today_section_workouts">Workouts</string>
     <string name="today_section_heart_rate">Heart Rate</string>

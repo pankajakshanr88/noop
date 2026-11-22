@@ -34,9 +34,9 @@ class HealthConnectPermissionCategoryTest {
     }
 
     @Test
-    fun newInstallsDefaultNarrowWhileLegacyInstallsKeepExistingImports() {
+    fun newInstallsDefaultIncludesRecoveryAndActivityWhileLegacyInstallsKeepExistingImports() {
         assertEquals(
-            recovery,
+            recovery + activity,
             HealthConnectImporter.categoriesFromStoredKeys(null, hadLegacyPermissionSignature = false),
         )
         assertEquals(

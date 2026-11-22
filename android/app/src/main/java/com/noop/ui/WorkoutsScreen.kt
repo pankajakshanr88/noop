@@ -1423,19 +1423,31 @@ private fun SessionRow(
         // Sport ("detected" reads as "Activity").
         Row(modifier = Modifier.weight(1.3f), verticalAlignment = Alignment.CenterVertically) {
             Icon(
-                sportIcon(row.sport),
+                sportIcon(row),
                 contentDescription = null,
-                tint = Palette.textSecondary,
+                tint = if (isPumpWorkout(row)) Palette.zone2 else Palette.textSecondary,
                 modifier = Modifier.size(14.dp),
             )
             Spacer(Modifier.width(7.dp))
-            Text(
-                WorkoutEditing.displaySport(row.sport),
-                style = NoopType.subhead,
-                color = Palette.textPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Column {
+                Text(
+                    WorkoutEditing.displaySport(row.sport),
+                    style = NoopType.subhead,
+                    color = Palette.textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                val pumpSummary = pumpVolumeSummary(row)
+                if (pumpSummary != null) {
+                    Text(
+                        pumpSummary,
+                        style = NoopType.footnote,
+                        color = Palette.zone2,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
         }
         Cell(durationLabel(row.durationS), Modifier.weight(1f))
         Cell(
@@ -1508,9 +1520,9 @@ internal fun WorkoutDetailSheet(vm: AppViewModel, row: WorkoutRow, onDismiss: ()
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
-                    sportIcon(row.sport),
+                    sportIcon(row),
                     contentDescription = null,
-                    tint = Palette.effortColor,
+                    tint = if (isPumpWorkout(row)) Palette.zone2 else Palette.effortColor,
                     modifier = Modifier.size(22.dp),
                 )
                 Spacer(Modifier.width(10.dp))
@@ -2554,27 +2566,74 @@ internal fun zoneSummary(rows: List<WorkoutRow>): ZoneSummary? {
 }
 
 /**
- * The Src-column badge (label + tint). "HC" is abbreviated to fit the narrow column (Apple is
- * likewise short for "Apple Health"); Data Sources / Today spell out "Health Connect". Tints match
- * those screens: WHOOP accent green, Apple cyan, Health Connect purple.
+ * True when [row] was logged in the Pump strength-training app and imported via Health Connect.
+ * Pump sessions remain stored under `deviceId = "health-connect"` / `source = "health-connect"`
+ * so `fillWorkoutHrFromStrap` continues to attach WHOOP strap HR to Pump lifting sessions.
  */
-private val WorkoutRow.sourceBadge: Pair<String, Color>
-    get() = when (WorkoutEditing.classify(source)) {
+internal fun isPumpWorkout(row: WorkoutRow): Boolean =
+    row.notes?.contains("Logged with Pump", ignoreCase = true) == true
+
+private val PUMP_MARKER_SEGMENT = Regex(
+    "(?i)^logged\\s+with\\s+pump\\s*[:\\-–—,]?\\s*|\\s*[:\\-–—,]?\\s*logged\\s+with\\s+pump$",
+)
+
+/**
+ * Extracts the volume / set summary line from a Pump workout's notes (stripping the
+ * `"Logged with Pump"` attribution marker), or null if [row] is not a Pump workout or carries
+ * no summary beyond the attribution marker.
+ */
+internal fun pumpVolumeSummary(row: WorkoutRow): String? {
+    if (!isPumpWorkout(row)) return null
+    val notes = row.notes ?: return null
+    return notes
+        .lineSequence()
+        .map { line ->
+            line.split("·", "|")
+                .map { segment -> PUMP_MARKER_SEGMENT.replace(segment.trim(), "").trim() }
+                .filter { it.isNotEmpty() }
+                .joinToString(" · ")
+        }
+        .firstOrNull { it.isNotEmpty() }
+}
+
+/**
+ * Pure row → short Src-column badge code (`internal` + Compose-free for JVM unit tests).
+ * Pump workouts receive a distinct `"PUMP"` badge instead of generic `"HC"`.
+ */
+internal fun workoutBadgeLabel(row: WorkoutRow): String = when {
+    isPumpWorkout(row) -> "PUMP"
+    else -> when (WorkoutEditing.classify(row.source)) {
         // Detected (on-device auto-detector) is honestly labelled so a duplicate is recognisable +
         // removable (#107); manual = user-logged. Both classify on `source` BEFORE the import labels.
         // #486: SHORT badge codes so the label fits the narrow weight-1 Src column on a phone instead of
         // ellipsising ("Manual"->"MA...", "Whoop"->"WH...", "Detected"->"DE..."). The colour + the row
         // context disambiguate. iOS keeps the full words — its Source column is a fixed 80pt that fits them
         // and those labels are localized; Android's badge labels are hardcoded, so this stays platform-local.
-        WorkoutSource.DETECTED -> "AUTO" to Palette.metricPurple
-        WorkoutSource.MANUAL -> "MAN" to Palette.statusWarning
-        WorkoutSource.LIFTING -> "LIFT" to Palette.zone2 // imported Hevy / Liftosaur strength log
-        WorkoutSource.ACTIVITY_FILE -> "FILE" to Palette.metricAmber // imported GPX / TCX / FIT
-        else -> when (workoutSourceLabel(deviceId, source)) {
-            "HC" -> "HC" to Palette.metricPurple
-            "Whoop" -> "WHP" to Palette.accent
-            else -> "APL" to Palette.metricCyan
+        WorkoutSource.DETECTED -> "AUTO"
+        WorkoutSource.MANUAL -> "MAN"
+        WorkoutSource.LIFTING -> "LIFT" // imported Hevy / Liftosaur strength log
+        WorkoutSource.ACTIVITY_FILE -> "FILE" // imported GPX / TCX / FIT
+        else -> when (workoutSourceLabel(row.deviceId, row.source)) {
+            "HC" -> "HC"
+            "Whoop" -> "WHP"
+            else -> "APL"
         }
+    }
+}
+
+/**
+ * The Src-column badge (label + tint). "HC" is abbreviated to fit the narrow column (Apple is
+ * likewise short for "Apple Health"); Data Sources / Today spell out "Health Connect". Tints match
+ * those screens: WHOOP accent green, Apple cyan, Health Connect purple, Pump/Lifting zone2.
+ */
+private val WorkoutRow.sourceBadge: Pair<String, Color>
+    get() = when (val label = workoutBadgeLabel(this)) {
+        "PUMP", "LIFT" -> label to Palette.zone2
+        "AUTO", "HC" -> label to Palette.metricPurple
+        "MAN" -> label to Palette.statusWarning
+        "FILE" -> label to Palette.metricAmber
+        "WHP" -> label to Palette.accent
+        else -> label to Palette.metricCyan
     }
 
 // MARK: - Formatting
@@ -2606,6 +2665,13 @@ private fun oneDecimal(v: Double): String = String.format(Locale.US, "%.1f", v)
 private fun grouped(v: Double): String = String.format(Locale.US, "%,d", v.roundToInt())
 
 // MARK: - Sport icons (Material equivalents of the SF Symbols used on macOS)
+
+/**
+ * Row-aware sport icon: Pump workouts always resolve to the dumbbell ([Icons.Filled.FitnessCenter])
+ * even when the user gave the session a custom title like "Push Day" or "Upper A".
+ */
+internal fun sportIcon(row: WorkoutRow): ImageVector =
+    if (isPumpWorkout(row)) Icons.Filled.FitnessCenter else sportIcon(row.sport)
 
 // internal (not private): reused by the Today Overview-HR chart to glyph each workout at its HR peak.
 internal fun sportIcon(sport: String): ImageVector = when (sport.lowercase().trim()) {

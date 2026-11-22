@@ -43,6 +43,11 @@ data class WidgetSnapshot(
      *  from any day but today, so the widget cannot show yesterday's afternoon under today's date while
      *  waiting for the first scorable hour after midnight. */
     val stressDay: Long? = null,
+    /** Overnight HRV (ms), resting HR (bpm), total sleep (minutes), and today's steps for the OLED vitals widget. */
+    val hrvMs: Int? = null,
+    val restingHr: Int? = null,
+    val sleepMin: Int? = null,
+    val steps: Int? = null,
     /** Wall-clock millis of the last push, so the widget can show honest staleness. */
     val updatedAtMs: Long = 0L,
 )
@@ -271,6 +276,10 @@ object WidgetSnapshotStore {
             e.putString(KEY_STRESS, StressTrace.encode(snap.stressSeries))
                 .putLong(KEY_STRESS_DAY, snap.stressDay)
         }
+        snap.hrvMs?.let { e.putInt("hrvMs", it) }
+        snap.restingHr?.let { e.putInt("restingHr", it) }
+        snap.sleepMin?.let { e.putInt("sleepMin", it) }
+        snap.steps?.let { e.putInt("steps", it) }
         e.apply()
     }
 
@@ -311,6 +320,10 @@ object WidgetSnapshotStore {
             // a loaded snapshot reporting yesterday's day beside an emptied curve would be a trap for
             // anything that later treated the pair as writable state.
             stressDay = p.getLong(KEY_STRESS_DAY, Long.MIN_VALUE).takeIf { it == today },
+            hrvMs = p.getInt("hrvMs", -1).takeIf { it >= 0 },
+            restingHr = p.getInt("restingHr", -1).takeIf { it >= 0 },
+            sleepMin = p.getInt("sleepMin", -1).takeIf { it >= 0 },
+            steps = p.getInt("steps", -1).takeIf { it >= 0 },
             updatedAtMs = p.getLong("updatedAt", 0L),
         )
     }
@@ -393,6 +406,7 @@ internal object RenderedGate {
             "${visible.batteryPct}|${visible.connected}|${visible.heartRate}|" +
             "${visible.heartRateStale}|${visible.hrSeries.size}|${newest?.ts}|${newest?.bpm}|" +
             "${visible.stressSeries.size}|${newestStress?.ts}|${newestStress?.level}|" +
+            "${visible.hrvMs}|${visible.restingHr}|${visible.sleepMin}|${visible.steps}|" +
             "$dark"
         val differs = key != last
         last = key
