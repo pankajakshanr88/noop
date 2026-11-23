@@ -114,10 +114,13 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
+import com.noop.sync.CoachSyncClient
+import com.noop.sync.CoachSyncPrefs
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -3760,6 +3763,120 @@ fun SettingsScreen(
                 fullWidth = true,
                 onClick = onOpenBackupSync,
             )
+        }
+
+        // --- Cloud Coach Sync (Direct NOOP -> coach-mcp Cloudflare Worker) ---
+        var coachSyncEnabled by remember { mutableStateOf(CoachSyncPrefs.isEnabled(context)) }
+        var coachSyncUrl by remember { mutableStateOf(CoachSyncPrefs.url(context)) }
+        var coachSyncToken by remember { mutableStateOf(CoachSyncPrefs.token(context)) }
+        val coachSyncBusy by vm.coachSyncBusy.collectAsStateWithLifecycle()
+        val coachSyncLastAtMs by vm.coachSyncLastAtMs.collectAsStateWithLifecycle()
+        val coachSyncLastStatus by vm.coachSyncLastStatus.collectAsStateWithLifecycle()
+
+        SettingsCard(
+            icon = Icons.Filled.CloudSync,
+            title = "Cloud Coach Sync",
+            blurb = "Sync compact daily vitals (Charge, Rest, Effort, HRV, RHR, Sleep, Steps, Battery) to your self-hosted Cloud Coach Worker on app resume (15-min throttle). Never sends raw BLE, IMU, or heart-rate streams.",
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                SettingsToggleRow(
+                    title = "Enable Cloud Coach Sync",
+                    detail = "Automatically push today's WidgetSnapshot scalars when NOOP opens (at most once every 15 minutes).",
+                    checked = coachSyncEnabled,
+                    onCheckedChange = { enabled ->
+                        coachSyncEnabled = enabled
+                        CoachSyncPrefs.setEnabled(context, enabled)
+                    },
+                )
+
+                OutlinedTextField(
+                    value = coachSyncUrl,
+                    onValueChange = { value ->
+                        coachSyncUrl = value
+                        CoachSyncPrefs.setUrl(context, value)
+                    },
+                    label = { Text("Cloud Coach URL", style = NoopType.caption) },
+                    placeholder = { Text("https://coach-mcp.<subdomain>.workers.dev", style = NoopType.caption) },
+                    singleLine = true,
+                    textStyle = NoopType.subhead.copy(color = Palette.textPrimary),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Palette.accent,
+                        unfocusedBorderColor = Palette.hairline,
+                        focusedLabelColor = Palette.accent,
+                        unfocusedLabelColor = Palette.textSecondary,
+                        cursorColor = Palette.accent,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                OutlinedTextField(
+                    value = coachSyncToken,
+                    onValueChange = { value ->
+                        coachSyncToken = value
+                        CoachSyncPrefs.setToken(context, value)
+                    },
+                    label = { Text("Bearer Token", style = NoopType.caption) },
+                    placeholder = { Text("COACH_MCP_TOKEN", style = NoopType.caption) },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    textStyle = NoopType.subhead.copy(color = Palette.textPrimary),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Palette.accent,
+                        unfocusedBorderColor = Palette.hairline,
+                        focusedLabelColor = Palette.accent,
+                        unfocusedLabelColor = Palette.textSecondary,
+                        cursorColor = Palette.accent,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                NoopButton(
+                    text = if (coachSyncBusy) "Syncing…" else "Sync Now",
+                    leadingIcon = Icons.Filled.CloudSync,
+                    kind = NoopButtonKind.Primary,
+                    fullWidth = true,
+                    enabled = !coachSyncBusy &&
+                        CoachSyncPrefs.normalizeUrl(coachSyncUrl).isNotEmpty() &&
+                        CoachSyncPrefs.sanitizeToken(coachSyncToken).isNotEmpty(),
+                    onClick = {
+                        vm.syncCoachNow(
+                            urlOverride = coachSyncUrl,
+                            tokenOverride = coachSyncToken,
+                        ) { res ->
+                            val toastMsg = when (res) {
+                                is CoachSyncClient.SyncResult.Success -> "Synced NOOP vitals to Cloud Coach"
+                                is CoachSyncClient.SyncResult.Failure -> "Cloud Coach sync failed: ${res.message}"
+                            }
+                            Toast.makeText(context, toastMsg, Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                )
+
+                val formattedSyncTime = remember(coachSyncLastAtMs) {
+                    if (coachSyncLastAtMs <= 0L) {
+                        "Never"
+                    } else {
+                        java.text.DateFormat.getDateTimeInstance(
+                            java.text.DateFormat.SHORT,
+                            java.text.DateFormat.SHORT,
+                        ).format(java.util.Date(coachSyncLastAtMs))
+                    }
+                }
+                val statusLine = if (coachSyncLastStatus.isNotBlank()) {
+                    "Last sync: $formattedSyncTime · $coachSyncLastStatus"
+                } else {
+                    "Last sync: $formattedSyncTime"
+                }
+                Text(
+                    text = statusLine,
+                    style = NoopType.footnote,
+                    color = if (coachSyncLastStatus.startsWith("Failed")) {
+                        Palette.statusWarning
+                    } else {
+                        Palette.textTertiary
+                    },
+                )
+            }
         }
 
         // --- About ---

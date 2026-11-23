@@ -1592,6 +1592,7 @@ fun NoopRoot() {
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
                 appViewModel.ble.onForeground()
                 appViewModel.refreshHealthConnectOnForeground()
+                appViewModel.syncCoachOnForeground()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)

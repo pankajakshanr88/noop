@@ -53,6 +53,8 @@ import com.noop.notif.StrainTargetNotifier
 import com.noop.notif.ScheduledReportPolicy
 import com.noop.notif.scorePctOrNull
 import com.noop.protocol.CommandNumber
+import com.noop.sync.CoachSyncClient
+import com.noop.sync.CoachSyncPrefs
 import com.noop.widget.WidgetSnapshot
 import com.noop.widget.WidgetSnapshotStore
 import kotlinx.coroutines.Dispatchers
@@ -2710,6 +2712,129 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
             } finally {
                 hcSyncInFlight = false
+            }
+        }
+    }
+
+    // MARK: - Direct NOOP -> Cloud Coach Sync (15-min throttled foreground sync + manual Sync Now)
+
+    private var coachSyncInFlight = false
+    private val _coachSyncBusy = MutableStateFlow(false)
+    val coachSyncBusy: StateFlow<Boolean> = _coachSyncBusy.asStateFlow()
+    private val _coachSyncLastAtMs = MutableStateFlow(CoachSyncPrefs.lastSyncAtMs(appContext))
+    val coachSyncLastAtMs: StateFlow<Long> = _coachSyncLastAtMs.asStateFlow()
+    private val _coachSyncLastStatus = MutableStateFlow(CoachSyncPrefs.lastStatus(appContext))
+    val coachSyncLastStatus: StateFlow<String> = _coachSyncLastStatus.asStateFlow()
+
+    private fun currentCoachWidgetSnapshot(): WidgetSnapshot {
+        val stored = WidgetSnapshotStore.load(appContext)
+        val live = ble.state.value
+        val today = _today.value
+        val liveBattery = LiveConsoleReadout.batteryPercent(
+            activeIsWhoop = ble.activeDeviceIsWhoop,
+            whoopPct = live.batteryPct,
+            ringPct = noopApp.sourceCoordinator.ouraBatteryPct.value,
+        )
+        val combinedSteps =
+            ((today?.steps ?: 0) + live.liveImuSteps).takeIf { it > 0 } ?: stored.steps
+        return stored.copy(
+            recoveryPct = stored.recoveryPct ?: today?.recovery?.roundToInt(),
+            restPct = stored.restPct ?: today?.let { RestScorer.restFromDaily(it)?.roundToInt() },
+            effortPct = stored.effortPct ?: today?.strain?.roundToInt(),
+            hrvMs = stored.hrvMs ?: today?.avgHrv?.roundToInt(),
+            restingHr = stored.restingHr ?: today?.restingHr,
+            sleepMin = stored.sleepMin ?: today?.totalSleepMin?.roundToInt(),
+            steps = combinedSteps,
+            batteryPct = liveBattery ?: stored.batteryPct,
+            connected = live.connected || stored.connected,
+        )
+    }
+
+    /**
+     * Background Cloud Coach sync on foreground resume, throttled to at most once every 15 minutes.
+     * Posts ONLY [WidgetSnapshot] scalar fields to `POST <url>/sync/noop`.
+     */
+    fun syncCoachOnForeground() {
+        val enabled = CoachSyncPrefs.isEnabled(appContext)
+        val url = CoachSyncPrefs.url(appContext)
+        val token = CoachSyncPrefs.token(appContext)
+        val lastAt = CoachSyncPrefs.lastSyncAtMs(appContext)
+        val now = System.currentTimeMillis()
+        if (!CoachSyncPrefs.shouldRunForegroundSync(
+                enabled = enabled,
+                url = url,
+                token = token,
+                inFlight = coachSyncInFlight,
+                lastSyncAtMs = lastAt,
+                nowMs = now,
+            )
+        ) return
+        runCoachSync(url = url, token = token)
+    }
+
+    /**
+     * Manual "Sync Now" trigger from Settings -> Cloud Coach Sync card.
+     */
+    fun syncCoachNow(
+        urlOverride: String? = null,
+        tokenOverride: String? = null,
+        onComplete: (CoachSyncClient.SyncResult) -> Unit = {},
+    ) {
+        if (coachSyncInFlight) return
+        if (urlOverride != null) CoachSyncPrefs.setUrl(appContext, urlOverride)
+        if (tokenOverride != null) CoachSyncPrefs.setToken(appContext, tokenOverride)
+        val url = CoachSyncPrefs.url(appContext)
+        val token = CoachSyncPrefs.token(appContext)
+        runCoachSync(url = url, token = token, onComplete = onComplete)
+    }
+
+    private fun runCoachSync(
+        url: String,
+        token: String,
+        onComplete: (CoachSyncClient.SyncResult) -> Unit = {},
+    ) {
+        if (coachSyncInFlight) return
+        coachSyncInFlight = true
+        _coachSyncBusy.value = true
+        viewModelScope.launch {
+            try {
+                val snapshot = currentCoachWidgetSnapshot()
+                val payload = CoachSyncClient.buildPayload(snapshot = snapshot)
+                val result = withContext(Dispatchers.IO) {
+                    CoachSyncClient.postNoopVitals(
+                        baseUrl = url,
+                        bearerToken = token,
+                        payload = payload,
+                    )
+                }
+                val finishedAt = System.currentTimeMillis()
+                when (result) {
+                    is CoachSyncClient.SyncResult.Success -> {
+                        val status = "Synced (HTTP ${result.httpCode})"
+                        CoachSyncPrefs.recordSyncResult(
+                            context = appContext,
+                            atMs = finishedAt,
+                            status = status,
+                            updateTimestamp = true,
+                        )
+                        _coachSyncLastAtMs.value = finishedAt
+                        _coachSyncLastStatus.value = status
+                    }
+                    is CoachSyncClient.SyncResult.Failure -> {
+                        val status = "Failed: ${result.message}"
+                        CoachSyncPrefs.recordSyncResult(
+                            context = appContext,
+                            atMs = finishedAt,
+                            status = status,
+                            updateTimestamp = false,
+                        )
+                        _coachSyncLastStatus.value = status
+                    }
+                }
+                onComplete(result)
+            } finally {
+                coachSyncInFlight = false
+                _coachSyncBusy.value = false
             }
         }
     }
