@@ -28,6 +28,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -87,6 +90,13 @@ fun CoachNudgeSection(
         onDismiss = { vm.dismissCoachNudge(cleanScreen) },
         onAction = {
             when (nudge.action.type) {
+                "pump_routine" -> {
+                    if (!nudge.action.routineId.isNullOrBlank()) {
+                        openPumpRoutine(context, nudge.action.routineId)
+                    } else {
+                        openPumpCoach(context, nudge.action.prompt)
+                    }
+                }
                 "noop_live" -> {
                     if (onOpenLive != null) {
                         onOpenLive()
@@ -112,6 +122,44 @@ fun CoachNudgeSection(
         },
         modifier = modifier,
     )
+}
+
+/**
+ * Launch a specific Pump routine directly via `pump://routine/<routineId>`,
+ * falling back to `pump://routines` and then `com.pankaj.pump` package launch intent.
+ */
+internal fun openPumpRoutine(context: Context, routineId: String?) {
+    val primaryUri = CoachSyncClient.buildPumpRoutineDeepLinkUri(routineId)
+    val deepLink = Intent(Intent.ACTION_VIEW, Uri.parse(primaryUri)).apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    try {
+        context.startActivity(deepLink)
+        return
+    } catch (_: ActivityNotFoundException) {
+    } catch (_: Exception) {
+    }
+
+    val routinesDeepLink = Intent(Intent.ACTION_VIEW, Uri.parse("pump://routines")).apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    try {
+        context.startActivity(routinesDeepLink)
+        return
+    } catch (_: ActivityNotFoundException) {
+    } catch (_: Exception) {
+    }
+
+    val launchIntent = runCatching {
+        context.packageManager.getLaunchIntentForPackage("com.pankaj.pump")
+    }.getOrNull()
+    if (launchIntent != null) {
+        try {
+            context.startActivity(launchIntent)
+        } catch (_: ActivityNotFoundException) {
+        } catch (_: Exception) {
+        }
+    }
 }
 
 /**
@@ -159,7 +207,8 @@ internal fun openPumpCoach(context: Context, prompt: String? = null) {
  * - Dark gradient surface (`#141821` -> `#0E1016`) with subtle border + 3dp left accent rail colored by tone
  * - Top row: tinted `'COACH · <SCREEN>'` pill badge + subtle Refresh (`↻`) and Dismiss (`×`) icon buttons
  * - Bold headline + 1–2 line body message
- * - Footer row: `'Mistral Coach'` subtle label + dynamic CTA pill button (`action.label →`)
+ * - Tapping the card expands/collapses an inline `'Why this?'` detail panel showing `rationale` + `evidence` bullets
+ * - Footer row: `'Mistral Coach'` + `'Why? ▾'` / `'Hide ▴'` indicator + dynamic CTA pill button (`action.label →`)
  */
 @Composable
 fun CoachNudgeCard(
@@ -179,6 +228,9 @@ fun CoachNudgeCard(
     val screenLabel = nudge.screen.trim().uppercase().ifEmpty { "TODAY" }
     val rawLabel = nudge.action.label.trim().ifEmpty { "Open in Pump" }
     val ctaText = if (rawLabel.endsWith("→")) rawLabel else "$rawLabel →"
+    val hasWhyDetails = !nudge.rationale.isNullOrBlank() || nudge.evidence.isNotEmpty()
+    var expanded by remember(nudge.headline, nudge.generatedAt) { mutableStateOf(false) }
+
     val shape = RoundedCornerShape(14.dp)
     val cardGradient = Brush.linearGradient(
         colors = listOf(Color(0xFF141821), Color(0xFF0E1016)),
@@ -190,7 +242,14 @@ fun CoachNudgeCard(
             .height(IntrinsicSize.Min)
             .clip(shape)
             .background(cardGradient)
-            .border(1.dp, Color.White.copy(alpha = 0.08f), shape),
+            .border(1.dp, Color.White.copy(alpha = 0.08f), shape)
+            .then(
+                if (hasWhyDetails) {
+                    Modifier.clickable { expanded = !expanded }
+                } else {
+                    Modifier
+                }
+            ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // 3dp left accent rail colored by tone
@@ -285,7 +344,7 @@ fun CoachNudgeCard(
                     fontWeight = FontWeight.Bold,
                 ),
                 color = Color(0xFFF3F5F8),
-                maxLines = 1,
+                maxLines = if (expanded) 2 else 1,
                 overflow = TextOverflow.Ellipsis,
             )
 
@@ -297,11 +356,57 @@ fun CoachNudgeCard(
                     lineHeight = 17.5.sp,
                 ),
                 color = Color(0xFFC5CCD8),
-                maxLines = 2,
+                maxLines = if (expanded) 4 else 2,
                 overflow = TextOverflow.Ellipsis,
             )
 
-            // Footer row: 'Mistral Coach' subtle label + dynamic CTA pill button
+            // Expandable 'Why this?' detail panel showing rationale + evidence bullets
+            if (expanded && hasWhyDetails) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color.White.copy(alpha = 0.04f))
+                        .border(0.5.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        text = "Why this?",
+                        style = NoopType.overline.copy(
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.6.sp,
+                        ),
+                        color = accentColor,
+                    )
+
+                    if (!nudge.rationale.isNullOrBlank()) {
+                        Text(
+                            text = nudge.rationale,
+                            style = NoopType.footnote.copy(
+                                fontSize = 11.5.sp,
+                                lineHeight = 16.sp,
+                            ),
+                            color = Color(0xFFD5DAE2),
+                        )
+                    }
+
+                    nudge.evidence.forEach { bullet ->
+                        Text(
+                            text = "• $bullet",
+                            style = NoopType.caption.copy(
+                                fontSize = 11.sp,
+                                lineHeight = 15.sp,
+                            ),
+                            color = Color(0xFF9EA6B5),
+                        )
+                    }
+                }
+            }
+
+            // Footer row: 'Mistral Coach' + 'Why? ▾' / 'Hide ▴' indicator + dynamic CTA pill button
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -309,11 +414,26 @@ fun CoachNudgeCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Text(
-                    text = "Mistral Coach",
-                    style = NoopType.caption.copy(fontSize = 11.sp),
-                    color = Color(0xFF8B93A1),
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        text = "Mistral Coach",
+                        style = NoopType.caption.copy(fontSize = 11.sp),
+                        color = Color(0xFF8B93A1),
+                    )
+                    if (hasWhyDetails) {
+                        Text(
+                            text = if (expanded) "· Hide ▴" else "· Why? ▾",
+                            style = NoopType.caption.copy(
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                            ),
+                            color = accentColor.copy(alpha = 0.9f),
+                        )
+                    }
+                }
 
                 Box(
                     modifier = Modifier

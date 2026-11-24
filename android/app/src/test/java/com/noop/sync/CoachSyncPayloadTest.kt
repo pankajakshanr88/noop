@@ -346,4 +346,67 @@ class CoachSyncPayloadTest {
         assertTrue(syncNudge.action.label.length <= 24)
         assertNull(syncNudge.action.prompt)
     }
+
+    @Test
+    fun `parseNudgeResponse parses rationale, evidence, pump_routine action, and buildPumpRoutineDeepLinkUri`() {
+        val routineNudgeJson = """
+            {
+              "ok": true,
+              "screen": "workouts",
+              "headline": "Legs Complete · Pull Routine Next",
+              "message": "Legs are at 12 sets this week while biceps are at 0 sets. Start Pull Day next.",
+              "tone": "green",
+              "generatedAt": "2026-11-23T23:45:00Z",
+              "rationale": "Lower body was already logged today (12 sets total), so Pull Day is the next priority in your PPL split.",
+              "evidence": [
+                "Legs: 12 sets logged (Bulgarian Split Squat + Trap Bar Deadlift today)",
+                "Biceps: 0 sets (<6 targetMinSets)"
+              ],
+              "action": {
+                "label": "Start Pull Routine",
+                "type": "pump_routine",
+                "routineId": "routine_pull_01"
+              }
+            }
+        """.trimIndent()
+
+        val parsed = CoachSyncClient.parseNudgeResponse(routineNudgeJson, fallbackScreen = "workouts")
+        assertTrue(parsed != null)
+        assertEquals(
+            "Lower body was already logged today (12 sets total), so Pull Day is the next priority in your PPL split.",
+            parsed!!.rationale,
+        )
+        assertEquals(2, parsed.evidence.size)
+        assertTrue(parsed.evidence[0].contains("Legs: 12 sets"))
+        assertEquals("Start Pull Routine", parsed.action.label)
+        assertEquals("pump_routine", parsed.action.type)
+        assertEquals("routine_pull_01", parsed.action.routineId)
+
+        assertEquals(
+            "pump://routine/routine_pull_01",
+            CoachSyncClient.buildPumpRoutineDeepLinkUri(parsed.action.routineId),
+        )
+        assertEquals("pump://routines", CoachSyncClient.buildPumpRoutineDeepLinkUri(null))
+        assertEquals("pump://routines", CoachSyncClient.buildPumpRoutineDeepLinkUri("   "))
+
+        // If pump_routine is missing routineId, it safely falls back to pump_coach
+        val missingRoutineIdJson = """
+            {
+              "ok": true,
+              "screen": "workouts",
+              "headline": "Pull Routine Next",
+              "message": "Hit Pull Day tomorrow.",
+              "tone": "info",
+              "action": {
+                "label": "Start Pull Routine",
+                "type": "pump_routine"
+              }
+            }
+        """.trimIndent()
+        val fallbackCoach = CoachSyncClient.parseNudgeResponse(missingRoutineIdJson, fallbackScreen = "workouts")
+        assertTrue(fallbackCoach != null)
+        assertEquals("pump_coach", fallbackCoach!!.action.type)
+        assertNull(fallbackCoach.action.routineId)
+        assertTrue(!fallbackCoach.action.prompt.isNullOrBlank())
+    }
 }

@@ -35,6 +35,7 @@ object CoachSyncClient {
     data class CoachNudgeAction(
         val label: String,
         val type: String,
+        val routineId: String? = null,
         val prompt: String? = null,
     )
 
@@ -44,6 +45,8 @@ object CoachSyncClient {
         val message: String,
         val tone: String,
         val generatedAt: String,
+        val rationale: String? = null,
+        val evidence: List<String> = emptyList(),
         val action: CoachNudgeAction = defaultActionForScreen(screen),
     )
 
@@ -64,12 +67,12 @@ object CoachSyncClient {
     }
 
     /**
-     * Normalize an action type to one of `"pump_coach"`, `"noop_live"`, or `"noop_sync"`.
+     * Normalize an action type to one of `"pump_routine"`, `"pump_coach"`, `"noop_live"`, or `"noop_sync"`.
      */
     fun normalizeActionType(rawType: String?, fallbackType: String = "pump_coach"): String {
         val clean = rawType?.trim()?.lowercase().orEmpty()
         return when (clean) {
-            "pump_coach", "noop_live", "noop_sync" -> clean
+            "pump_routine", "pump_coach", "noop_live", "noop_sync" -> clean
             else -> fallbackType
         }
     }
@@ -120,12 +123,22 @@ object CoachSyncClient {
         val fallback = defaultActionForScreen(screen, headline, message)
         if (actionObj == null) return fallback
 
-        val type = normalizeActionType(
+        var type = normalizeActionType(
             rawType = actionObj.optString("type", ""),
             fallbackType = fallback.type,
         )
+        val routineId = actionObj.optString("routineId", "")
+            .trim()
+            .ifEmpty { actionObj.optString("routine_id", "").trim() }
+            .takeIf { it.isNotEmpty() }
+
+        if (type == "pump_routine" && routineId == null) {
+            type = "pump_coach"
+        }
+
         val rawLabel = actionObj.optString("label", "").trim()
         val defaultLabel = when (type) {
+            "pump_routine" -> "Start Routine"
             "noop_live" -> "Open Live Pedometer"
             "noop_sync" -> "Sync Strap"
             else -> "Open in Pump"
@@ -147,6 +160,7 @@ object CoachSyncClient {
         return CoachNudgeAction(
             label = label,
             type = type,
+            routineId = if (type == "pump_routine") routineId else null,
             prompt = prompt,
         )
     }
@@ -160,6 +174,17 @@ object CoachSyncClient {
         if (cleanPrompt.isEmpty()) return "pump://coach"
         val encoded = java.net.URLEncoder.encode(cleanPrompt, "UTF-8").replace("+", "%20")
         return "pump://coach?prompt=$encoded"
+    }
+
+    /**
+     * Build the `pump://routine/<routineId>` deep-link URI string for opening a specific
+     * Pump routine directly. Falls back to `"pump://routines"` if [routineId] is blank.
+     */
+    fun buildPumpRoutineDeepLinkUri(routineId: String?): String {
+        val cleanId = routineId?.trim().orEmpty()
+        if (cleanId.isEmpty()) return "pump://routines"
+        val encoded = java.net.URLEncoder.encode(cleanId, "UTF-8").replace("+", "%20")
+        return "pump://routine/$encoded"
     }
 
     /**
@@ -177,6 +202,16 @@ object CoachSyncClient {
             val screen = obj.optString("screen", fallbackScreen).trim().ifEmpty { fallbackScreen }
             val tone = normalizeTone(obj.optString("tone", "info"))
             val generatedAt = obj.optString("generatedAt", "").trim()
+            val rationale = obj.optString("rationale", "").trim().takeIf { it.isNotEmpty() }
+            val evidenceArr = obj.optJSONArray("evidence")
+            val evidence = buildList {
+                if (evidenceArr != null) {
+                    for (i in 0 until evidenceArr.length()) {
+                        val item = evidenceArr.optString(i, "").trim()
+                        if (item.isNotEmpty()) add(item)
+                    }
+                }
+            }
             val action = parseNudgeAction(
                 actionObj = obj.optJSONObject("action"),
                 screen = screen,
@@ -189,6 +224,8 @@ object CoachSyncClient {
                 message = message,
                 tone = tone,
                 generatedAt = generatedAt,
+                rationale = rationale,
+                evidence = evidence,
                 action = action,
             )
         } catch (_: Exception) {
