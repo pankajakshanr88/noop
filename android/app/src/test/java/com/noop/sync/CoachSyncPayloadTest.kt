@@ -211,4 +211,67 @@ class CoachSyncPayloadTest {
             ),
         )
     }
+
+    @Test
+    fun `parseNudgeResponse parses valid nudge JSON and normalizeTone falls back to info`() {
+        val rawJson = """
+            {
+              "ok": true,
+              "screen": "live",
+              "headline": "Steps Pacing · 2,100 by 5pm",
+              "message": "Your steps are at 2,100 by 5pm — a 15-min walk boosts NEAT.",
+              "tone": "YELLOW",
+              "cached": false,
+              "generatedAt": "2026-11-23T23:00:00Z"
+            }
+        """.trimIndent()
+
+        val nudge = CoachSyncClient.parseNudgeResponse(rawJson, fallbackScreen = "today")
+        assertTrue(nudge != null)
+        assertEquals("live", nudge!!.screen)
+        assertEquals("Steps Pacing · 2,100 by 5pm", nudge.headline)
+        assertEquals("Your steps are at 2,100 by 5pm — a 15-min walk boosts NEAT.", nudge.message)
+        assertEquals("yellow", nudge.tone)
+        assertEquals("2026-11-23T23:00:00Z", nudge.generatedAt)
+
+        // Unknown or missing tone falls back to "info"
+        val unknownToneJson = """
+            {
+              "ok": true,
+              "headline": "Pull Volume Lead",
+              "message": "Prioritize RDLs tomorrow.",
+              "tone": "purple"
+            }
+        """.trimIndent()
+        val fallbackNudge = CoachSyncClient.parseNudgeResponse(unknownToneJson, fallbackScreen = "workouts")
+        assertTrue(fallbackNudge != null)
+        assertEquals("workouts", fallbackNudge!!.screen)
+        assertEquals("info", fallbackNudge.tone)
+
+        assertEquals("green", CoachSyncClient.normalizeTone("Green"))
+        assertEquals("red", CoachSyncClient.normalizeTone(" RED "))
+        assertEquals("info", CoachSyncClient.normalizeTone("invalid"))
+        assertEquals("info", CoachSyncClient.normalizeTone(null))
+
+        // Error or malformed JSON returns null silently
+        assertNull(CoachSyncClient.parseNudgeResponse("""{"ok":false,"error":"failed"}"""))
+        assertNull(CoachSyncClient.parseNudgeResponse("""{"ok":true,"headline":""}"""))
+        assertNull(CoachSyncClient.parseNudgeResponse("not json"))
+    }
+
+    @Test
+    fun `shouldShowScreenNudges and nudgeEndpointUrl honor sync and nudge prefs`() {
+        assertTrue(CoachSyncPrefs.shouldShowScreenNudges(syncEnabled = true, showScreenNudgesPref = true))
+        assertFalse(CoachSyncPrefs.shouldShowScreenNudges(syncEnabled = true, showScreenNudgesPref = false))
+        assertFalse(CoachSyncPrefs.shouldShowScreenNudges(syncEnabled = false, showScreenNudgesPref = true))
+
+        assertEquals(
+            "https://coach-mcp.example.workers.dev/coach/nudge",
+            CoachSyncPrefs.nudgeEndpointUrl("https://coach-mcp.example.workers.dev/coach/nudge/"),
+        )
+        assertEquals(
+            "https://coach-mcp.example.workers.dev/coach/nudge",
+            CoachSyncPrefs.nudgeEndpointUrl("https://coach-mcp.example.workers.dev/sync/noop"),
+        )
+    }
 }

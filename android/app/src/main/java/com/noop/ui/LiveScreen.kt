@@ -243,6 +243,11 @@ fun LiveScreen(viewModel: AppViewModel, onManageDevices: () -> Unit = {}) {
             activeIsWhoop = activeIsWhoop, ouraBatteryPct = ouraBatteryPct)
         }
 
+        // Per-screen WHOOP-style Coach Nudge for Live (steps / effort / daily movement pacing)
+        item {
+        CoachNudgeSection(vm = viewModel, screen = "live")
+        }
+
         // Primary Connect affordance, surfaced ABOVE the fold whenever there's no link — the real
         // Connect control otherwise lives far below, past the Signal Trust grid, so an offline user
         // saw only inert copy up top. Gated purely on `!live.connected`, so it disappears the instant

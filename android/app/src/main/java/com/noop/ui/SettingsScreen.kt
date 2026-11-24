@@ -3767,6 +3767,7 @@ fun SettingsScreen(
 
         // --- Cloud Coach Sync (Direct NOOP -> coach-mcp Cloudflare Worker) ---
         var coachSyncEnabled by remember { mutableStateOf(CoachSyncPrefs.isEnabled(context)) }
+        var coachShowScreenNudges by remember { mutableStateOf(CoachSyncPrefs.showScreenNudges(context)) }
         var coachSyncUrl by remember { mutableStateOf(CoachSyncPrefs.url(context)) }
         var coachSyncToken by remember { mutableStateOf(CoachSyncPrefs.token(context)) }
         val coachSyncBusy by vm.coachSyncBusy.collectAsStateWithLifecycle()
@@ -3786,6 +3787,16 @@ fun SettingsScreen(
                     onCheckedChange = { enabled ->
                         coachSyncEnabled = enabled
                         CoachSyncPrefs.setEnabled(context, enabled)
+                    },
+                )
+
+                SettingsToggleRow(
+                    title = "Show Coach insights on screens",
+                    detail = "Display compact WHOOP-style Coach nudges on Today, Live, and Workouts when Cloud Coach Sync is enabled.",
+                    checked = coachShowScreenNudges,
+                    onCheckedChange = { show ->
+                        coachShowScreenNudges = show
+                        CoachSyncPrefs.setShowScreenNudges(context, show)
                     },
                 )
 

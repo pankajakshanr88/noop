@@ -1,16 +1,19 @@
 package com.noop.sync
 
 import com.noop.widget.WidgetSnapshot
+import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import java.time.Instant
 import java.time.LocalDate
+import java.time.LocalTime
 
 /**
  * Pure `java.net.HttpURLConnection` client for syncing compact NOOP daily vitals
- * (`WidgetSnapshot` scalars ONLY — never raw BLE/IMU/HR streams) to `POST <url>/sync/noop`.
+ * (`WidgetSnapshot` scalars ONLY — never raw BLE/IMU/HR streams) to `POST <url>/sync/noop`
+ * and fetching fast per-screen Coach nudges from `POST <url>/coach/nudge`.
  */
 object CoachSyncClient {
 
@@ -29,9 +32,130 @@ object CoachSyncClient {
         val source: String = "noop",
     )
 
+    data class CoachNudge(
+        val screen: String,
+        val headline: String,
+        val message: String,
+        val tone: String,
+        val generatedAt: String,
+    )
+
     sealed class SyncResult {
         data class Success(val syncedAt: String, val httpCode: Int) : SyncResult()
         data class Failure(val message: String, val httpCode: Int? = null) : SyncResult()
+    }
+
+    /**
+     * Normalize a nudge tone to one of `"green"`, `"yellow"`, `"red"`, or `"info"`.
+     */
+    fun normalizeTone(rawTone: String?): String {
+        val clean = rawTone?.trim()?.lowercase().orEmpty()
+        return when (clean) {
+            "green", "yellow", "red", "info" -> clean
+            else -> "info"
+        }
+    }
+
+    /**
+     * Pure parser for `POST <url>/coach/nudge` response JSON.
+     * Returns null if JSON is malformed or missing `headline`/`message`.
+     */
+    fun parseNudgeResponse(rawJson: String?, fallbackScreen: String = "today"): CoachNudge? {
+        if (rawJson.isNullOrBlank()) return null
+        return try {
+            val obj = JSONObject(rawJson)
+            if (obj.has("ok") && !obj.optBoolean("ok", true)) return null
+            val headline = obj.optString("headline", "").trim()
+            val message = obj.optString("message", "").trim()
+            if (headline.isEmpty() || message.isEmpty()) return null
+            val screen = obj.optString("screen", fallbackScreen).trim().ifEmpty { fallbackScreen }
+            val tone = normalizeTone(obj.optString("tone", "info"))
+            val generatedAt = obj.optString("generatedAt", "").trim()
+            CoachNudge(
+                screen = screen,
+                headline = headline,
+                message = message,
+                tone = tone,
+                generatedAt = generatedAt,
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Build the request JSON body for `POST <url>/coach/nudge`.
+     */
+    fun buildNudgeRequestJson(
+        screen: String,
+        localHour: Int,
+        force: Boolean = false,
+    ): String = buildString {
+        append('{')
+        append("\"screen\":").append(escapeJsonString(screen.trim().lowercase())).append(',')
+        append("\"localHour\":").append(localHour.coerceIn(0, 23)).append(',')
+        append("\"force\":").append(force)
+        append('}')
+    }
+
+    /**
+     * Fetch a per-screen Coach nudge from `POST <baseUrl>/coach/nudge` with a short 6s timeout.
+     * Returns null silently on any network, auth, or parsing failure.
+     */
+    fun fetchNudge(
+        baseUrl: String,
+        bearerToken: String,
+        screen: String,
+        localHour: Int = LocalTime.now().hour,
+        force: Boolean = false,
+        connectTimeoutMs: Int = 6_000,
+        readTimeoutMs: Int = 6_000,
+    ): CoachNudge? {
+        val endpoint = CoachSyncPrefs.nudgeEndpointUrl(baseUrl)
+        val cleanToken = CoachSyncPrefs.sanitizeToken(bearerToken)
+        if (endpoint.isEmpty() || cleanToken.isEmpty()) return null
+        if (!endpoint.startsWith("https://", ignoreCase = true) &&
+            !endpoint.startsWith("http://", ignoreCase = true)
+        ) {
+            return null
+        }
+
+        val bodyBytes = buildNudgeRequestJson(
+            screen = screen,
+            localHour = localHour,
+            force = force,
+        ).toByteArray(Charsets.UTF_8)
+
+        var conn: HttpURLConnection? = null
+        return try {
+            conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = connectTimeoutMs
+                readTimeout = readTimeoutMs
+                doInput = true
+                doOutput = true
+                useCaches = false
+                setFixedLengthStreamingMode(bodyBytes.size)
+                setRequestProperty("Authorization", "Bearer $cleanToken")
+                setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                setRequestProperty("Accept", "application/json")
+            }
+
+            conn.outputStream.use { out ->
+                out.write(bodyBytes)
+                out.flush()
+            }
+
+            if (conn.responseCode !in 200..299) return null
+            val responseText = conn.inputStream?.let { stream ->
+                BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { it.readText() }
+            }
+            parseNudgeResponse(responseText, fallbackScreen = screen)
+        } catch (_: Exception) {
+            null
+        } finally {
+            conn?.disconnect()
+        }
     }
 
     /**

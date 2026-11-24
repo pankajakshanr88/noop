@@ -1646,6 +1646,13 @@ fun TodayScreen(
             days.lastOrNull()?.day == resolveTodayRow(days, todayDate.toString(), LocalDate.now().toString())?.day
         ) item { IllnessBanner(alert!!) }
 
+        // Per-screen WHOOP-style Coach Nudge for Today (shown when Cloud Coach Sync & Screen Nudges are enabled)
+        if (selectedDayOffset == 0) {
+            item {
+                CoachNudgeSection(vm = viewModel, screen = "today")
+            }
+        }
+
         // #486: the "Arrange" affordance moved UP into the header/wordmark cluster (see above) so it no
         // longer sits alone in its own full-width band here. It stays pinned; only its position changed.
 

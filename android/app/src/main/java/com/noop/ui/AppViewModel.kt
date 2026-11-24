@@ -2726,6 +2726,81 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _coachSyncLastStatus = MutableStateFlow(CoachSyncPrefs.lastStatus(appContext))
     val coachSyncLastStatus: StateFlow<String> = _coachSyncLastStatus.asStateFlow()
 
+    // Per-screen WHOOP-style Coach Nudges ("today", "live", "workouts") with 10-min in-memory throttle
+    private val _coachNudges = MutableStateFlow<Map<String, CoachSyncClient.CoachNudge>>(emptyMap())
+    val coachNudges: StateFlow<Map<String, CoachSyncClient.CoachNudge>> = _coachNudges.asStateFlow()
+    private val _dismissedNudges = MutableStateFlow<Set<String>>(emptySet())
+    val dismissedNudges: StateFlow<Set<String>> = _dismissedNudges.asStateFlow()
+    private val _coachNudgeRefreshing = MutableStateFlow<Set<String>>(emptySet())
+    val coachNudgeRefreshing: StateFlow<Set<String>> = _coachNudgeRefreshing.asStateFlow()
+    private val coachNudgeLastFetchedAtMs = mutableMapOf<String, Long>()
+    private val coachNudgeInFlight = mutableSetOf<String>()
+
+    /**
+     * Dismiss a per-screen Coach nudge for the current session (`"today"`, `"live"`, or `"workouts"`).
+     */
+    fun dismissCoachNudge(screen: String) {
+        val cleanScreen = screen.trim().lowercase()
+        if (cleanScreen.isEmpty()) return
+        _dismissedNudges.value = _dismissedNudges.value + cleanScreen
+    }
+
+    /**
+     * Request a per-screen Coach nudge (`"today"`, `"live"`, or `"workouts"`).
+     * Throttled in-memory for 10 minutes per screen so tab switching is instant;
+     * [force] = true bypasses the throttle and clears any dismissed state for [screen].
+     */
+    fun requestCoachNudge(screen: String, force: Boolean = false) {
+        val cleanScreen = screen.trim().lowercase()
+        if (cleanScreen.isEmpty()) return
+        if (force) {
+            _dismissedNudges.value = _dismissedNudges.value - cleanScreen
+        }
+        if (!CoachSyncPrefs.shouldShowScreenNudges(
+                syncEnabled = CoachSyncPrefs.isEnabled(appContext),
+                showScreenNudgesPref = CoachSyncPrefs.showScreenNudges(appContext),
+            )
+        ) return
+        val url = CoachSyncPrefs.url(appContext)
+        val token = CoachSyncPrefs.token(appContext)
+        if (url.isEmpty() || token.isEmpty()) return
+        if (cleanScreen in coachNudgeInFlight) return
+
+        val now = System.currentTimeMillis()
+        val lastAt = coachNudgeLastFetchedAtMs[cleanScreen] ?: 0L
+        if (!force &&
+            lastAt > 0L &&
+            now - lastAt in 0 until CoachSyncPrefs.NUDGE_THROTTLE_MS &&
+            _coachNudges.value.containsKey(cleanScreen)
+        ) {
+            return
+        }
+
+        coachNudgeInFlight.add(cleanScreen)
+        _coachNudgeRefreshing.value = _coachNudgeRefreshing.value + cleanScreen
+        val localHour = java.time.LocalTime.now().hour
+        viewModelScope.launch {
+            try {
+                val nudge = withContext(Dispatchers.IO) {
+                    CoachSyncClient.fetchNudge(
+                        baseUrl = url,
+                        bearerToken = token,
+                        screen = cleanScreen,
+                        localHour = localHour,
+                        force = force,
+                    )
+                }
+                if (nudge != null) {
+                    _coachNudges.value = _coachNudges.value + (cleanScreen to nudge)
+                    coachNudgeLastFetchedAtMs[cleanScreen] = System.currentTimeMillis()
+                }
+            } finally {
+                coachNudgeInFlight.remove(cleanScreen)
+                _coachNudgeRefreshing.value = _coachNudgeRefreshing.value - cleanScreen
+            }
+        }
+    }
+
     private fun currentCoachWidgetSnapshot(): WidgetSnapshot {
         val stored = WidgetSnapshotStore.load(appContext)
         val live = ble.state.value
@@ -2819,6 +2894,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         )
                         _coachSyncLastAtMs.value = finishedAt
                         _coachSyncLastStatus.value = status
+                        coachNudgeLastFetchedAtMs.clear()
                     }
                     is CoachSyncClient.SyncResult.Failure -> {
                         val status = "Failed: ${result.message}"

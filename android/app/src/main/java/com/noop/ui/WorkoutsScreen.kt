@@ -279,6 +279,11 @@ fun WorkoutsScreen(vm: AppViewModel) {
         WorkoutStartSection(vm, onAdd = { dialog = DialogTarget(null) })
         }
 
+        // Per-screen WHOOP-style Coach Nudge for Workouts (Pump volume / muscle balance / next lift)
+        item {
+        CoachNudgeSection(vm = vm, screen = "workouts")
+        }
+
         if (allRows.isEmpty()) {
             item {
             EmptyWorkouts()

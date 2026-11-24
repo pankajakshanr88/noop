@@ -15,9 +15,13 @@ object CoachSyncPrefs {
     private const val KEY_TOKEN = "token"
     private const val KEY_LAST_SYNC_AT_MS = "lastSyncAtMs"
     private const val KEY_LAST_STATUS = "lastStatus"
+    private const val KEY_SHOW_SCREEN_NUDGES = "showScreenNudges"
 
     /** Background foreground-resume auto-sync throttle: 15 minutes. */
     const val THROTTLE_MS = 15 * 60 * 1_000L
+
+    /** In-memory per-screen Coach nudge throttle: 10 minutes. */
+    const val NUDGE_THROTTLE_MS = 10 * 60 * 1_000L
 
     private val INVISIBLE_CHARS_REGEX =
         Regex("[\\u0000-\\u001F\\u007F-\\u009F\\u200B-\\u200D\\uFEFF]")
@@ -27,7 +31,7 @@ object CoachSyncPrefs {
      * Normalize a user-entered Cloud Coach URL:
      * - strips invisible control/zero-width chars and trims whitespace
      * - strips trailing slashes
-     * - strips a trailing `/sync/noop` suffix if the user pasted the full endpoint path
+     * - strips a trailing `/sync/noop` or `/coach/nudge` suffix if the user pasted an endpoint path
      */
     fun normalizeUrl(raw: String?): String {
         if (raw == null) return ""
@@ -35,10 +39,12 @@ object CoachSyncPrefs {
         while (cleaned.endsWith("/")) {
             cleaned = cleaned.dropLast(1).trim()
         }
-        if (cleaned.endsWith("/sync/noop", ignoreCase = true)) {
-            cleaned = cleaned.dropLast("/sync/noop".length).trim()
-            while (cleaned.endsWith("/")) {
-                cleaned = cleaned.dropLast(1).trim()
+        for (suffix in listOf("/sync/noop", "/coach/nudge")) {
+            if (cleaned.endsWith(suffix, ignoreCase = true)) {
+                cleaned = cleaned.dropLast(suffix.length).trim()
+                while (cleaned.endsWith("/")) {
+                    cleaned = cleaned.dropLast(1).trim()
+                }
             }
         }
         return cleaned
@@ -52,6 +58,24 @@ object CoachSyncPrefs {
         if (base.isEmpty()) return ""
         return "$base/sync/noop"
     }
+
+    /**
+     * Resolve the full `POST <baseUrl>/coach/nudge` endpoint URL, or empty string if baseUrl is blank.
+     */
+    fun nudgeEndpointUrl(rawBaseUrl: String?): String {
+        val base = normalizeUrl(rawBaseUrl)
+        if (base.isEmpty()) return ""
+        return "$base/coach/nudge"
+    }
+
+    /**
+     * Pure helper deciding whether per-screen Coach nudges should be displayed.
+     * Defaults to true whenever Cloud Coach Sync is enabled unless explicitly toggled off.
+     */
+    fun shouldShowScreenNudges(
+        syncEnabled: Boolean,
+        showScreenNudgesPref: Boolean = true,
+    ): Boolean = syncEnabled && showScreenNudgesPref
 
     /**
      * Sanitize a user-entered Bearer token:
@@ -131,5 +155,16 @@ object CoachSyncPrefs {
             editor.putLong(KEY_LAST_SYNC_AT_MS, atMs)
         }
         editor.apply()
+    }
+
+    /**
+     * Whether per-screen Coach insight cards are enabled on Today, Live, and Workouts.
+     * Defaults to TRUE when Cloud Coach Sync is enabled.
+     */
+    fun showScreenNudges(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_SHOW_SCREEN_NUDGES, true)
+
+    fun setShowScreenNudges(context: Context, show: Boolean) {
+        prefs(context).edit().putBoolean(KEY_SHOW_SCREEN_NUDGES, show).apply()
     }
 }
