@@ -4,6 +4,7 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -52,6 +53,7 @@ import com.noop.sync.CoachSyncPrefs
 fun CoachNudgeSection(
     vm: AppViewModel,
     screen: String,
+    onOpenLive: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -83,17 +85,42 @@ fun CoachNudgeSection(
         refreshing = isRefreshing,
         onRefresh = { vm.requestCoachNudge(cleanScreen, force = true) },
         onDismiss = { vm.dismissCoachNudge(cleanScreen) },
-        onOpenPump = { openPumpCoach(context) },
+        onAction = {
+            when (nudge.action.type) {
+                "noop_live" -> {
+                    if (onOpenLive != null) {
+                        onOpenLive()
+                    } else {
+                        vm.requestRealtimeHr()
+                        vm.syncNow()
+                    }
+                }
+                "noop_sync" -> {
+                    vm.syncNow()
+                    vm.syncCoachNow { res ->
+                        val msg = when (res) {
+                            is CoachSyncClient.SyncResult.Success -> "Synced strap & vitals to Cloud Coach"
+                            is CoachSyncClient.SyncResult.Failure -> "Cloud Coach sync failed: ${res.message}"
+                        }
+                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                    }
+                }
+                else -> {
+                    openPumpCoach(context, nudge.action.prompt)
+                }
+            }
+        },
         modifier = modifier,
     )
 }
 
 /**
- * Launch Pump's Coach screen via deep link (`pump://coach`), falling back to the
- * `com.pankaj.pump` package launch intent and catching [ActivityNotFoundException] safely.
+ * Launch Pump's Coach screen via deep link (`pump://coach?prompt=<encoded>`), falling back to
+ * `pump://coach` and then the `com.pankaj.pump` package launch intent, catching [ActivityNotFoundException] safely.
  */
-internal fun openPumpCoach(context: Context) {
-    val deepLink = Intent(Intent.ACTION_VIEW, Uri.parse("pump://coach")).apply {
+internal fun openPumpCoach(context: Context, prompt: String? = null) {
+    val primaryUri = CoachSyncClient.buildPumpCoachDeepLinkUri(prompt)
+    val deepLink = Intent(Intent.ACTION_VIEW, Uri.parse(primaryUri)).apply {
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
     try {
@@ -101,6 +128,18 @@ internal fun openPumpCoach(context: Context) {
         return
     } catch (_: ActivityNotFoundException) {
     } catch (_: Exception) {
+    }
+
+    if (!prompt.isNullOrBlank()) {
+        val baseDeepLink = Intent(Intent.ACTION_VIEW, Uri.parse("pump://coach")).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        try {
+            context.startActivity(baseDeepLink)
+            return
+        } catch (_: ActivityNotFoundException) {
+        } catch (_: Exception) {
+        }
     }
 
     val launchIntent = runCatching {
@@ -120,7 +159,7 @@ internal fun openPumpCoach(context: Context) {
  * - Dark gradient surface (`#141821` -> `#0E1016`) with subtle border + 3dp left accent rail colored by tone
  * - Top row: tinted `'COACH · <SCREEN>'` pill badge + subtle Refresh (`↻`) and Dismiss (`×`) icon buttons
  * - Bold headline + 1–2 line body message
- * - Footer row: `'Mistral Coach'` subtle label + compact `'Open in Pump →'` pill button
+ * - Footer row: `'Mistral Coach'` subtle label + dynamic CTA pill button (`action.label →`)
  */
 @Composable
 fun CoachNudgeCard(
@@ -128,7 +167,7 @@ fun CoachNudgeCard(
     refreshing: Boolean = false,
     onRefresh: () -> Unit,
     onDismiss: () -> Unit,
-    onOpenPump: () -> Unit = {},
+    onAction: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val accentColor = when (CoachSyncClient.normalizeTone(nudge.tone)) {
@@ -138,6 +177,8 @@ fun CoachNudgeCard(
         else -> Color(0xFF38BDF8)
     }
     val screenLabel = nudge.screen.trim().uppercase().ifEmpty { "TODAY" }
+    val rawLabel = nudge.action.label.trim().ifEmpty { "Open in Pump" }
+    val ctaText = if (rawLabel.endsWith("→")) rawLabel else "$rawLabel →"
     val shape = RoundedCornerShape(14.dp)
     val cardGradient = Brush.linearGradient(
         colors = listOf(Color(0xFF141821), Color(0xFF0E1016)),
@@ -260,7 +301,7 @@ fun CoachNudgeCard(
                 overflow = TextOverflow.Ellipsis,
             )
 
-            // Footer row: 'Mistral Coach' subtle label + compact 'Open in Pump →' pill button
+            // Footer row: 'Mistral Coach' subtle label + dynamic CTA pill button
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -280,12 +321,12 @@ fun CoachNudgeCard(
                         .background(Color.White.copy(alpha = 0.08f))
                         .clickable(
                             role = Role.Button,
-                            onClick = onOpenPump,
+                            onClick = onAction,
                         )
                         .padding(horizontal = 9.dp, vertical = 4.dp),
                 ) {
                     Text(
-                        text = "Open in Pump →",
+                        text = ctaText,
                         style = NoopType.caption.copy(
                             fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold,

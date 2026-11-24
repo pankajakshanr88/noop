@@ -330,6 +330,7 @@ fun TodayScreen(
     // The #627 journal-reminder card links straight to the journal (Insights). Defaulted to a no-op so
     // the call site stays compiling; AppRoot binds it to nav.navigateTopLevel(Insights), same as Sleep.
     onOpenJournal: () -> Unit = {},
+    onOpenLive: () -> Unit = {},
 ) {
     val today by viewModel.today.collectAsStateWithLifecycle()
     val alert by viewModel.healthAlert.collectAsStateWithLifecycle()
@@ -1649,7 +1650,11 @@ fun TodayScreen(
         // Per-screen WHOOP-style Coach Nudge for Today (shown when Cloud Coach Sync & Screen Nudges are enabled)
         if (selectedDayOffset == 0) {
             item {
-                CoachNudgeSection(vm = viewModel, screen = "today")
+                CoachNudgeSection(
+                    vm = viewModel,
+                    screen = "today",
+                    onOpenLive = onOpenLive,
+                )
             }
         }
 

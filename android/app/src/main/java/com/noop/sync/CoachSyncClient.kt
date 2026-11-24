@@ -32,12 +32,19 @@ object CoachSyncClient {
         val source: String = "noop",
     )
 
+    data class CoachNudgeAction(
+        val label: String,
+        val type: String,
+        val prompt: String? = null,
+    )
+
     data class CoachNudge(
         val screen: String,
         val headline: String,
         val message: String,
         val tone: String,
         val generatedAt: String,
+        val action: CoachNudgeAction = defaultActionForScreen(screen),
     )
 
     sealed class SyncResult {
@@ -57,6 +64,105 @@ object CoachSyncClient {
     }
 
     /**
+     * Normalize an action type to one of `"pump_coach"`, `"noop_live"`, or `"noop_sync"`.
+     */
+    fun normalizeActionType(rawType: String?, fallbackType: String = "pump_coach"): String {
+        val clean = rawType?.trim()?.lowercase().orEmpty()
+        return when (clean) {
+            "pump_coach", "noop_live", "noop_sync" -> clean
+            else -> fallbackType
+        }
+    }
+
+    /**
+     * Default action per screen when the backend omits or partially specifies `action`.
+     */
+    fun defaultActionForScreen(
+        screen: String,
+        headline: String = "",
+        message: String = "",
+    ): CoachNudgeAction {
+        val cleanScreen = screen.trim().lowercase()
+        val contextPrefix = if (headline.isNotBlank() && message.isNotBlank()) {
+            "Context from NOOP ($headline: $message). "
+        } else {
+            ""
+        }
+        return when (cleanScreen) {
+            "live" -> CoachNudgeAction(
+                label = "Open Live Pedometer",
+                type = "noop_live",
+                prompt = null,
+            )
+            "workouts" -> CoachNudgeAction(
+                label = "Build Next Workout",
+                type = "pump_coach",
+                prompt = "${contextPrefix}Based on my recent Pump workouts, weekly muscle balance, and NOOP recovery, build my next optimal workout session.",
+            )
+            else -> CoachNudgeAction(
+                label = "Open in Pump",
+                type = "pump_coach",
+                prompt = "${contextPrefix}Based on my NOOP recovery and readiness today, adjust today's Pump workout sets, loads, and target RPE.",
+            )
+        }
+    }
+
+    /**
+     * Parse the `action` object inside a Coach nudge JSON response, falling back safely to
+     * `'Open in Pump'` / `'pump_coach'` (or screen default) when omitted or malformed.
+     */
+    fun parseNudgeAction(
+        actionObj: JSONObject?,
+        screen: String,
+        headline: String = "",
+        message: String = "",
+    ): CoachNudgeAction {
+        val fallback = defaultActionForScreen(screen, headline, message)
+        if (actionObj == null) return fallback
+
+        val type = normalizeActionType(
+            rawType = actionObj.optString("type", ""),
+            fallbackType = fallback.type,
+        )
+        val rawLabel = actionObj.optString("label", "").trim()
+        val defaultLabel = when (type) {
+            "noop_live" -> "Open Live Pedometer"
+            "noop_sync" -> "Sync Strap"
+            else -> "Open in Pump"
+        }
+        val label = (rawLabel.ifEmpty { defaultLabel }).let {
+            if (it.length <= 24) it else "${it.take(23).trimEnd()}…"
+        }
+
+        val prompt = if (type == "pump_coach") {
+            val rawPrompt = actionObj.optString("prompt", "").trim()
+            rawPrompt.ifEmpty {
+                fallback.prompt
+                    ?: "Based on my NOOP insight ($headline: $message), prescribe my optimal Pump workout adjustments for today."
+            }
+        } else {
+            null
+        }
+
+        return CoachNudgeAction(
+            label = label,
+            type = type,
+            prompt = prompt,
+        )
+    }
+
+    /**
+     * Build the `pump://coach?prompt=<encoded>` deep-link URI string using pure JVM
+     * `URLEncoder` (`+` converted to `%20`) so it is 100% unit-testable without Android `Uri` stubs.
+     */
+    fun buildPumpCoachDeepLinkUri(prompt: String?): String {
+        val cleanPrompt = prompt?.trim().orEmpty()
+        if (cleanPrompt.isEmpty()) return "pump://coach"
+        val encoded = java.net.URLEncoder.encode(cleanPrompt, "UTF-8").replace("+", "%20")
+        return "pump://coach?prompt=$encoded"
+    }
+
+    /**
      * Pure parser for `POST <url>/coach/nudge` response JSON.
      * Returns null if JSON is malformed or missing `headline`/`message`.
      */
@@ -71,12 +177,19 @@ object CoachSyncClient {
             val screen = obj.optString("screen", fallbackScreen).trim().ifEmpty { fallbackScreen }
             val tone = normalizeTone(obj.optString("tone", "info"))
             val generatedAt = obj.optString("generatedAt", "").trim()
+            val action = parseNudgeAction(
+                actionObj = obj.optJSONObject("action"),
+                screen = screen,
+                headline = headline,
+                message = message,
+            )
             CoachNudge(
                 screen = screen,
                 headline = headline,
                 message = message,
                 tone = tone,
                 generatedAt = generatedAt,
+                action = action,
             )
         } catch (_: Exception) {
             null

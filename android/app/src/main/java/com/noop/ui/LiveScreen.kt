@@ -245,7 +245,14 @@ fun LiveScreen(viewModel: AppViewModel, onManageDevices: () -> Unit = {}) {
 
         // Per-screen WHOOP-style Coach Nudge for Live (steps / effort / daily movement pacing)
         item {
-        CoachNudgeSection(vm = viewModel, screen = "live")
+        CoachNudgeSection(
+            vm = viewModel,
+            screen = "live",
+            onOpenLive = {
+                viewModel.requestRealtimeHr()
+                viewModel.syncNow()
+            },
+        )
         }
 
         // Primary Connect affordance, surfaced ABOVE the fold whenever there's no link — the real

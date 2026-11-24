@@ -274,4 +274,76 @@ class CoachSyncPayloadTest {
             CoachSyncPrefs.nudgeEndpointUrl("https://coach-mcp.example.workers.dev/sync/noop"),
         )
     }
+
+    @Test
+    fun `parseNudgeResponse parses dynamic action and buildPumpCoachDeepLinkUri encodes prompt safely`() {
+        val withPumpActionJson = """
+            {
+              "ok": true,
+              "screen": "workouts",
+              "headline": "Hamstrings Under 6 Sets",
+              "message": "Back is at 14 sets while hamstrings are at 4 sets. Prioritize RDLs today.",
+              "tone": "yellow",
+              "generatedAt": "2026-11-23T23:30:00Z",
+              "action": {
+                "label": "Build Legs Workout",
+                "type": "pump_coach",
+                "prompt": "Build a hamstring-focused Legs workout in Pump with RDLs @ RPE 8."
+              }
+            }
+        """.trimIndent()
+
+        val parsed = CoachSyncClient.parseNudgeResponse(withPumpActionJson, fallbackScreen = "workouts")
+        assertTrue(parsed != null)
+        assertEquals("Build Legs Workout", parsed!!.action.label)
+        assertEquals("pump_coach", parsed.action.type)
+        assertEquals(
+            "Build a hamstring-focused Legs workout in Pump with RDLs @ RPE 8.",
+            parsed.action.prompt,
+        )
+
+        val uri = CoachSyncClient.buildPumpCoachDeepLinkUri(parsed.action.prompt)
+        assertEquals(
+            "pump://coach?prompt=Build%20a%20hamstring-focused%20Legs%20workout%20in%20Pump%20with%20RDLs%20%40%20RPE%208.",
+            uri,
+        )
+        assertEquals("pump://coach", CoachSyncClient.buildPumpCoachDeepLinkUri(null))
+        assertEquals("pump://coach", CoachSyncClient.buildPumpCoachDeepLinkUri("   "))
+
+        // Omitted action on "today" falls back to "Open in Pump" / "pump_coach" with a concrete prompt
+        val omittedActionTodayJson = """
+            {
+              "ok": true,
+              "screen": "today",
+              "headline": "Charge 44% · Cap RPE",
+              "message": "Trim 1 working set today.",
+              "tone": "red"
+            }
+        """.trimIndent()
+        val fallbackToday = CoachSyncClient.parseNudgeResponse(omittedActionTodayJson, fallbackScreen = "today")
+        assertTrue(fallbackToday != null)
+        assertEquals("Open in Pump", fallbackToday!!.action.label)
+        assertEquals("pump_coach", fallbackToday.action.type)
+        assertTrue(!fallbackToday.action.prompt.isNullOrBlank())
+
+        // noop_live and noop_sync actions parse cleanly and truncate labels > 24 chars
+        val syncActionJson = """
+            {
+              "ok": true,
+              "screen": "today",
+              "headline": "Strap Sync Needed",
+              "message": "Offload latest overnight HR.",
+              "tone": "info",
+              "action": {
+                "label": "Sync Strap And Refresh Cloud Now",
+                "type": "noop_sync"
+              }
+            }
+        """.trimIndent()
+        val syncNudge = CoachSyncClient.parseNudgeResponse(syncActionJson)
+        assertTrue(syncNudge != null)
+        assertEquals("noop_sync", syncNudge!!.action.type)
+        assertTrue(syncNudge.action.label.length <= 24)
+        assertNull(syncNudge.action.prompt)
+    }
 }

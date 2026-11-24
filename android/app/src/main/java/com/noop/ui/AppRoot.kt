@@ -660,6 +660,7 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
                         // #627: the journal-reminder card opens the journal (hosted in Insights), same
                         // destination the Sleep screen's morning sheet uses.
                         onOpenJournal = { nav.navigateTopLevel(Destination.Insights.route) },
+                        onOpenLive = { nav.navigate(Destination.Live.route) },
                     )
                 }
                 composable(Destination.Live.route) {
@@ -704,7 +705,12 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
                 composable(Destination.Explore.route) { TrendsExploreScreen(viewModel) }
                 composable(Destination.Automations.route) { AutomationsScreen(viewModel) }
                 composable(Destination.SmartAlarm.route) { SmartAlarmScreen(viewModel) }
-                composable(Destination.Workouts.route) { WorkoutsScreen(viewModel) }
+                composable(Destination.Workouts.route) {
+                    WorkoutsScreen(
+                        vm = viewModel,
+                        onOpenLive = { nav.navigate(Destination.Live.route) },
+                    )
+                }
                 composable(Destination.Intelligence.route) { IntelligenceScreen(viewModel) }
 
                 // --- Placeholder routes (later waves fill these in) ---
