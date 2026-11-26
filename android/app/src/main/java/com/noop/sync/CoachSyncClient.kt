@@ -1,6 +1,8 @@
 package com.noop.sync
 
 import com.noop.widget.WidgetSnapshot
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -54,6 +56,12 @@ object CoachSyncClient {
         data class Success(val syncedAt: String, val httpCode: Int) : SyncResult()
         data class Failure(val message: String, val httpCode: Int? = null) : SyncResult()
     }
+
+    data class CloudCoachChatReply(
+        val reply: String,
+        val conversationId: String? = null,
+        val model: String = "mistral-cloud-coach",
+    )
 
     /**
      * Normalize a nudge tone to one of `"green"`, `"yellow"`, `"red"`, or `"info"`.
@@ -441,5 +449,245 @@ object CoachSyncClient {
         } finally {
             conn?.disconnect()
         }
+    }
+
+    /**
+     * Build the request JSON body for `POST <baseUrl>/coach/chat`.
+     * When [resetConversation] is true, includes `"resetConversation":true` and omits any stale [conversationId].
+     */
+    fun buildChatRequestJson(
+        message: String,
+        conversationId: String? = null,
+        resetConversation: Boolean = false,
+    ): String = buildString {
+        val cleanMessage = message.trim()
+        val cleanConvId = conversationId?.trim().orEmpty()
+        append('{')
+        append("\"message\":").append(escapeJsonString(cleanMessage))
+        if (resetConversation) {
+            append(",\"resetConversation\":true")
+        } else if (cleanConvId.isNotEmpty()) {
+            append(",\"conversationId\":").append(escapeJsonString(cleanConvId))
+        }
+        append('}')
+    }
+
+    private fun extractReplyTextFromJsonObject(obj: JSONObject): String {
+        for (key in listOf("reply", "text", "response", "content", "output", "answer")) {
+            val v = obj.optString(key, "").trim()
+            if (v.isNotEmpty()) return v
+        }
+
+        val messageObj = obj.optJSONObject("message")
+        if (messageObj != null) {
+            val content = messageObj.optString("content", "").trim()
+            if (content.isNotEmpty()) return content
+            val text = messageObj.optString("text", "").trim()
+            if (text.isNotEmpty()) return text
+        } else {
+            val messageStr = obj.optString("message", "").trim()
+            if (messageStr.isNotEmpty()) return messageStr
+        }
+
+        val outputs = obj.optJSONArray("outputs")
+        if (outputs != null) {
+            val parts = mutableListOf<String>()
+            for (i in 0 until outputs.length()) {
+                val item = outputs.optJSONObject(i) ?: continue
+                val contentArr = item.optJSONArray("content")
+                if (contentArr != null) {
+                    for (j in 0 until contentArr.length()) {
+                        val chunk = contentArr.optJSONObject(j) ?: continue
+                        val t = chunk.optString("text", "").trim()
+                        if (t.isNotEmpty()) parts.add(t)
+                    }
+                } else {
+                    val c = item.optString("content", "").trim()
+                    if (c.isNotEmpty()) parts.add(c)
+                }
+            }
+            if (parts.isNotEmpty()) return parts.joinToString("\n").trim()
+        }
+
+        val choices = obj.optJSONArray("choices")
+        if (choices != null && choices.length() > 0) {
+            val first = choices.optJSONObject(0)
+            val msg = first?.optJSONObject("message")
+            val content = msg?.optString("content", "")?.trim().orEmpty()
+            if (content.isNotEmpty()) return content
+        }
+
+        return ""
+    }
+
+    /**
+     * Pure parser for `POST <baseUrl>/coach/chat` response JSON.
+     * Supports `reply`, `text`, `response`, `outputs`, and `choices` shapes, and returns a
+     * [Result.failure] when the server reports `ok: false`, invalid JSON, or an empty reply.
+     */
+    fun parseChatResponse(
+        rawJson: String?,
+        fallbackConversationId: String? = null,
+    ): Result<CloudCoachChatReply> {
+        if (rawJson.isNullOrBlank()) {
+            return Result.failure(IllegalStateException("Cloud Coach returned an empty response."))
+        }
+        return try {
+            val obj = JSONObject(rawJson)
+            if (obj.has("ok") && !obj.optBoolean("ok", true)) {
+                val err = obj.optString("error", "").trim().ifEmpty { "Cloud Coach request failed." }
+                return Result.failure(IllegalStateException(err))
+            }
+
+            val replyText = extractReplyTextFromJsonObject(obj)
+            if (replyText.isEmpty()) {
+                return Result.failure(IllegalStateException("Cloud Coach returned an empty reply."))
+            }
+
+            val convId = obj.optString("conversationId", "").trim()
+                .ifEmpty { obj.optString("conversation_id", "").trim() }
+                .ifEmpty { fallbackConversationId?.trim().orEmpty() }
+                .takeIf { it.isNotEmpty() }
+
+            val model = obj.optString("model", "").trim().ifEmpty { "mistral-cloud-coach" }
+
+            Result.success(
+                CloudCoachChatReply(
+                    reply = replyText,
+                    conversationId = convId,
+                    model = model,
+                ),
+            )
+        } catch (e: Exception) {
+            Result.failure(
+                IllegalStateException(
+                    "Invalid Cloud Coach response: ${e.message ?: e.javaClass.simpleName}",
+                    e,
+                ),
+            )
+        }
+    }
+
+    /**
+     * Synchronous worker for `POST <baseUrl>/coach/chat` with Bearer auth and 25s read timeout.
+     */
+    fun postCloudCoachChat(
+        baseUrl: String,
+        token: String,
+        message: String,
+        conversationId: String? = null,
+        resetConversation: Boolean = false,
+        connectTimeoutMs: Int = 10_000,
+        readTimeoutMs: Int = 25_000,
+    ): Result<CloudCoachChatReply> {
+        val cleanMessage = message.trim()
+        if (cleanMessage.isEmpty()) {
+            return Result.failure(IllegalArgumentException("Message cannot be empty."))
+        }
+        val endpoint = CoachSyncPrefs.chatEndpointUrl(baseUrl)
+        val cleanToken = CoachSyncPrefs.sanitizeToken(token)
+        if (endpoint.isEmpty() ||
+            (!endpoint.startsWith("https://", ignoreCase = true) &&
+                !endpoint.startsWith("http://", ignoreCase = true))
+        ) {
+            return Result.failure(IllegalArgumentException("Cloud Coach URL is not configured."))
+        }
+        if (cleanToken.isEmpty()) {
+            return Result.failure(IllegalArgumentException("Cloud Coach Bearer token is not configured."))
+        }
+
+        val bodyBytes = buildChatRequestJson(
+            message = cleanMessage,
+            conversationId = conversationId,
+            resetConversation = resetConversation,
+        ).toByteArray(Charsets.UTF_8)
+
+        var conn: HttpURLConnection? = null
+        return try {
+            conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = connectTimeoutMs
+                readTimeout = readTimeoutMs
+                doInput = true
+                doOutput = true
+                useCaches = false
+                setFixedLengthStreamingMode(bodyBytes.size)
+                setRequestProperty("Authorization", "Bearer $cleanToken")
+                setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                setRequestProperty("Accept", "application/json")
+            }
+
+            conn.outputStream.use { out ->
+                out.write(bodyBytes)
+                out.flush()
+            }
+
+            val code = conn.responseCode
+            if (code in 200..299) {
+                val responseText = conn.inputStream?.let { stream ->
+                    BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { it.readText() }
+                }
+                parseChatResponse(
+                    rawJson = responseText,
+                    fallbackConversationId = if (resetConversation) null else conversationId,
+                )
+            } else {
+                val errBody = runCatching {
+                    val stream = conn.errorStream ?: conn.inputStream
+                    stream?.let {
+                        BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use { r ->
+                            r.readText().take(240).trim()
+                        }
+                    }
+                }.getOrNull().orEmpty()
+                val parsedError = runCatching {
+                    if (errBody.startsWith("{")) {
+                        JSONObject(errBody).optString("error", "").trim()
+                    } else {
+                        ""
+                    }
+                }.getOrNull().orEmpty()
+                val detail = parsedError.ifEmpty { errBody.take(160) }
+                val msg = if (detail.isNotEmpty()) {
+                    "Cloud Coach HTTP $code: $detail"
+                } else {
+                    "Cloud Coach HTTP $code"
+                }
+                Result.failure(IllegalStateException(msg))
+            }
+        } catch (e: Exception) {
+            Result.failure(
+                IllegalStateException(
+                    e.message?.takeIf { it.isNotBlank() } ?: "Could not reach Cloud Coach.",
+                    e,
+                ),
+            )
+        } finally {
+            conn?.disconnect()
+        }
+    }
+
+    /**
+     * Send a user chat turn to `POST <baseUrl>/coach/chat` on the Mistral Managed Agent (`coach-mcp`)
+     * with Bearer auth and a 25s read timeout.
+     */
+    suspend fun sendCloudCoachChat(
+        baseUrl: String,
+        token: String,
+        message: String,
+        conversationId: String? = null,
+        resetConversation: Boolean = false,
+        connectTimeoutMs: Int = 10_000,
+        readTimeoutMs: Int = 25_000,
+    ): Result<CloudCoachChatReply> = withContext(Dispatchers.IO) {
+        postCloudCoachChat(
+            baseUrl = baseUrl,
+            token = token,
+            message = message,
+            conversationId = conversationId,
+            resetConversation = resetConversation,
+            connectTimeoutMs = connectTimeoutMs,
+            readTimeoutMs = readTimeoutMs,
+        )
     }
 }

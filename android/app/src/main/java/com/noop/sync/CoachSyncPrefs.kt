@@ -16,6 +16,7 @@ object CoachSyncPrefs {
     private const val KEY_LAST_SYNC_AT_MS = "lastSyncAtMs"
     private const val KEY_LAST_STATUS = "lastStatus"
     private const val KEY_SHOW_SCREEN_NUDGES = "showScreenNudges"
+    private const val KEY_CLOUD_COACH_CONVERSATION_ID = "cloudCoachConversationId"
 
     /** Background foreground-resume auto-sync throttle: 15 minutes. */
     const val THROTTLE_MS = 15 * 60 * 1_000L
@@ -39,7 +40,7 @@ object CoachSyncPrefs {
         while (cleaned.endsWith("/")) {
             cleaned = cleaned.dropLast(1).trim()
         }
-        for (suffix in listOf("/sync/noop", "/coach/nudge")) {
+        for (suffix in listOf("/sync/noop", "/coach/nudge", "/coach/chat")) {
             if (cleaned.endsWith(suffix, ignoreCase = true)) {
                 cleaned = cleaned.dropLast(suffix.length).trim()
                 while (cleaned.endsWith("/")) {
@@ -67,6 +68,24 @@ object CoachSyncPrefs {
         if (base.isEmpty()) return ""
         return "$base/coach/nudge"
     }
+
+    /**
+     * Resolve the full `POST <baseUrl>/coach/chat` endpoint URL, or empty string if baseUrl is blank.
+     */
+    fun chatEndpointUrl(rawBaseUrl: String?): String {
+        val base = normalizeUrl(rawBaseUrl)
+        if (base.isEmpty()) return ""
+        return "$base/coach/chat"
+    }
+
+    /**
+     * Pure helper returning true iff Cloud Coach is enabled and both baseUrl and token are non-blank.
+     */
+    fun isConfigured(
+        enabled: Boolean,
+        url: String?,
+        token: String?,
+    ): Boolean = enabled && normalizeUrl(url).isNotEmpty() && sanitizeToken(token).isNotEmpty()
 
     /**
      * Pure helper deciding whether per-screen Coach nudges should be displayed.
@@ -166,5 +185,35 @@ object CoachSyncPrefs {
 
     fun setShowScreenNudges(context: Context, show: Boolean) {
         prefs(context).edit().putBoolean(KEY_SHOW_SCREEN_NUDGES, show).apply()
+    }
+
+    /**
+     * True iff Cloud Coach is enabled and both URL and Bearer token are configured.
+     */
+    fun isConfigured(context: Context): Boolean =
+        isConfigured(
+            enabled = isEnabled(context),
+            url = url(context),
+            token = token(context),
+        )
+
+    /**
+     * Persisted Mistral Cloud Coach conversation ID for stateful multi-turn chats in NOOP's Coach tab.
+     */
+    fun cloudCoachConversationId(context: Context): String? =
+        prefs(context).getString(KEY_CLOUD_COACH_CONVERSATION_ID, null)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+
+    fun getCloudCoachConversationId(context: Context): String? =
+        cloudCoachConversationId(context)
+
+    fun setCloudCoachConversationId(context: Context, conversationId: String?) {
+        val clean = conversationId?.trim().orEmpty()
+        prefs(context).edit().putString(KEY_CLOUD_COACH_CONVERSATION_ID, clean).apply()
+    }
+
+    fun clearCloudCoachConversationId(context: Context) {
+        prefs(context).edit().remove(KEY_CLOUD_COACH_CONVERSATION_ID).apply()
     }
 }

@@ -409,4 +409,118 @@ class CoachSyncPayloadTest {
         assertNull(fallbackCoach.action.routineId)
         assertTrue(!fallbackCoach.action.prompt.isNullOrBlank())
     }
+
+    @Test
+    fun `chatEndpointUrl, isConfigured, buildChatRequestJson, and parseChatResponse handle Cloud Coach chat contract`() {
+        assertEquals(
+            "https://pankaj-coach-mcp.pank-r89.workers.dev/coach/chat",
+            CoachSyncPrefs.chatEndpointUrl("https://pankaj-coach-mcp.pank-r89.workers.dev/coach/chat/"),
+        )
+        assertEquals(
+            "https://pankaj-coach-mcp.pank-r89.workers.dev/coach/chat",
+            CoachSyncPrefs.chatEndpointUrl("https://pankaj-coach-mcp.pank-r89.workers.dev/sync/noop"),
+        )
+        assertEquals("", CoachSyncPrefs.chatEndpointUrl("   "))
+
+        assertTrue(
+            CoachSyncPrefs.isConfigured(
+                enabled = true,
+                url = "https://pankaj-coach-mcp.pank-r89.workers.dev",
+                token = "Bearer secret-123",
+            ),
+        )
+        assertFalse(
+            CoachSyncPrefs.isConfigured(
+                enabled = false,
+                url = "https://pankaj-coach-mcp.pank-r89.workers.dev",
+                token = "secret-123",
+            ),
+        )
+        assertFalse(
+            CoachSyncPrefs.isConfigured(
+                enabled = true,
+                url = "   ",
+                token = "secret-123",
+            ),
+        )
+        assertFalse(
+            CoachSyncPrefs.isConfigured(
+                enabled = true,
+                url = "https://pankaj-coach-mcp.pank-r89.workers.dev",
+                token = "Bearer   ",
+            ),
+        )
+
+        // First turn without conversationId
+        val reqInitial = CoachSyncClient.buildChatRequestJson(
+            message = "How is my recovery today?",
+            conversationId = null,
+            resetConversation = false,
+        )
+        assertEquals("""{"message":"How is my recovery today?"}""", reqInitial)
+
+        // Follow-up turn with conversationId
+        val reqFollowUp = CoachSyncClient.buildChatRequestJson(
+            message = "What should I lift?",
+            conversationId = "conv_mistral_42",
+            resetConversation = false,
+        )
+        assertEquals(
+            """{"message":"What should I lift?","conversationId":"conv_mistral_42"}""",
+            reqFollowUp,
+        )
+
+        // Reset turn sends resetConversation:true and omits stale conversationId
+        val reqReset = CoachSyncClient.buildChatRequestJson(
+            message = "Start fresh block",
+            conversationId = "conv_mistral_42",
+            resetConversation = true,
+        )
+        assertEquals(
+            """{"message":"Start fresh block","resetConversation":true}""",
+            reqReset,
+        )
+
+        // Standard coach-mcp reply JSON
+        val okReplyJson = """
+            {
+              "ok": true,
+              "reply": "Charge is 86% and HRV is 69 ms. Hit Pull Day at RPE 8.",
+              "conversationId": "conv_mistral_99",
+              "model": "mistral-medium-latest"
+            }
+        """.trimIndent()
+        val parsedResult = CoachSyncClient.parseChatResponse(okReplyJson)
+        assertTrue(parsedResult.isSuccess)
+        val reply = parsedResult.getOrThrow()
+        assertEquals("Charge is 86% and HRV is 69 ms. Hit Pull Day at RPE 8.", reply.reply)
+        assertEquals("conv_mistral_99", reply.conversationId)
+        assertEquals("mistral-medium-latest", reply.model)
+
+        // Fallback conversationId & Mistral outputs array shape
+        val outputsJson = """
+            {
+              "outputs": [
+                {
+                  "type": "message.output",
+                  "content": "Keep rest intervals at 2 minutes."
+                }
+              ]
+            }
+        """.trimIndent()
+        val outputsReply = CoachSyncClient.parseChatResponse(
+            rawJson = outputsJson,
+            fallbackConversationId = "conv_existing_7",
+        ).getOrThrow()
+        assertEquals("Keep rest intervals at 2 minutes.", outputsReply.reply)
+        assertEquals("conv_existing_7", outputsReply.conversationId)
+        assertEquals("mistral-cloud-coach", outputsReply.model)
+
+        // Error or empty responses return Result.failure
+        assertTrue(
+            CoachSyncClient.parseChatResponse("""{"ok":false,"error":"Agent unavailable"}""").isFailure,
+        )
+        assertTrue(CoachSyncClient.parseChatResponse("""{"ok":true,"reply":"   "}""").isFailure)
+        assertTrue(CoachSyncClient.parseChatResponse("").isFailure)
+    }
 }

@@ -62,6 +62,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.noop.ai.AiProvider
 import com.noop.ai.ChatMsg
 import com.noop.ai.CustomAiAuthHeader
+import com.noop.sync.CoachSyncPrefs
 
 /**
  * AI Coach, the single opt-in, bring-your-own-key feature.
@@ -81,8 +82,11 @@ fun CoachScreen(vm: CoachViewModel = viewModel(), onOpenSettings: () -> Unit = {
     val keyVersion by vm.keyVersion.collectAsStateWithLifecycle()
     val provider by vm.provider.collectAsStateWithLifecycle()
     val customConnected by vm.customConnected.collectAsStateWithLifecycle()
-    // Re-evaluate the gate whenever the stored key, provider, or custom-connect state changes.
-    val configured = remember(keyVersion, provider, customConnected) { vm.isConfigured(context) }
+    val cloudCoachActive = CoachSyncPrefs.isConfigured(context)
+    // Re-evaluate the gate whenever the stored key, provider, custom-connect, or Cloud Coach state changes.
+    val configured = remember(keyVersion, provider, customConnected, cloudCoachActive) {
+        vm.isConfigured(context)
+    }
     // #1862: a question handed over by the Today launcher sheet. Consumed once — `consume()` clears it —
     // so a recomposition cannot resend it, and only when the coach can actually send, so an unconfigured
     // handoff degrades to showing setup rather than a failed request. Swift twin: CoachView's task.
@@ -275,6 +279,8 @@ private fun CoachChat(vm: CoachViewModel, onOpenSettings: () -> Unit) {
     val keyRejected by vm.keyRejected.collectAsStateWithLifecycle()
     val provider by vm.provider.collectAsStateWithLifecycle()
     val model by vm.model.collectAsStateWithLifecycle()
+    val cloudCoachModel by vm.cloudCoachModel.collectAsStateWithLifecycle()
+    val cloudCoachActive = CoachSyncPrefs.isConfigured(context)
     val suggestions by vm.suggestions.collectAsStateWithLifecycle()
     // K15: the composer draft is persisted to SharedPreferences so it survives an app relaunch.
     // Restored on first composition, saved on every change. Keyed identically to the iOS twin.
@@ -339,59 +345,134 @@ private fun CoachChat(vm: CoachViewModel, onOpenSettings: () -> Unit) {
         // which is the part worth keeping identical. The two settings screens do NOT hold the same
         // cards: see CoachSettingsScreen's own note on the two Gemini/signals opt-ins.
         NoopCard(padding = 14.dp, tint = Palette.chargeColor) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                // The pill takes the flexible space (ellipsizing a long model id); the actions
-                // keep their intrinsic single-line width so they can never be squeezed into a vertical
-                // stack (#1074).
-                StatePill(
-                    title = uiString(R.string.l10n_coach_screen_provider_displayname_model_8b39f761, provider.displayName, model),
-                    tone = StrandTone.Accent, showsDot = true,
-                    modifier = Modifier.weight(1f),
-                )
-                Spacer(Modifier.width(8.dp))
-                val settingsInteraction = remember { MutableInteractionSource() }
-                Icon(
-                    Icons.Filled.Tune,
-                    contentDescription = uiString(R.string.coach_settings),
-                    tint = Palette.textSecondary,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .liquidPress(settingsInteraction)
-                        .clickable(interactionSource = settingsInteraction, indication = null) { onOpenSettings() }
-                        .padding(6.dp)
-                        .size(20.dp),
-                )
-                Spacer(Modifier.width(4.dp))
-                val keyInteraction = remember { MutableInteractionSource() }
-                Icon(
-                    Icons.Filled.Edit,
-                    contentDescription = uiString(R.string.coach_key_rejected_action),
-                    tint = Palette.textSecondary,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .liquidPress(keyInteraction)
-                        .clickable(interactionSource = keyInteraction, indication = null) {
-                            showKeyEditor = !showKeyEditor
-                            if (!showKeyEditor) keyFix = ""
-                        }
-                        .padding(6.dp)
-                        .size(20.dp),
-                )
-                Spacer(Modifier.width(4.dp))
-                val disconnectInteraction = remember { MutableInteractionSource() }
-                Text(
-                    uiString(R.string.l10n_coach_screen_disconnect_ed28e068),
-                    style = NoopType.caption,
-                    color = Palette.textSecondary,
-                    maxLines = 1,
-                    softWrap = false,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .liquidPress(disconnectInteraction)
-                        .clickable(interactionSource = disconnectInteraction, indication = null) { vm.disconnect(context) }
-                        .padding(horizontal = 10.dp, vertical = 6.dp)
-                        .semantics { contentDescription = uiString(R.string.l10n_coach_screen_disconnect_provider_fa13625c) },
-                )
+            if (cloudCoachActive) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        StatePill(
+                            title = "Cloud Coach (Mistral + Pump)",
+                            tone = StrandTone.Accent,
+                            showsDot = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        val newChatInteraction = remember { MutableInteractionSource() }
+                        Text(
+                            "New Chat",
+                            style = NoopType.caption,
+                            color = Palette.textSecondary,
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .liquidPress(newChatInteraction)
+                                .clickable(interactionSource = newChatInteraction, indication = null) {
+                                    vm.clearConversation()
+                                }
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                                .semantics { contentDescription = "Start new Cloud Coach conversation" },
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        val settingsInteraction = remember { MutableInteractionSource() }
+                        Icon(
+                            Icons.Filled.Tune,
+                            contentDescription = uiString(R.string.coach_settings),
+                            tint = Palette.textSecondary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .liquidPress(settingsInteraction)
+                                .clickable(interactionSource = settingsInteraction, indication = null) { onOpenSettings() }
+                                .padding(6.dp)
+                                .size(20.dp),
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            text = "Model: $cloudCoachModel · Shared with Pump",
+                            style = NoopType.caption,
+                            color = Palette.textSecondary,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        val pumpChipShape = RoundedCornerShape(50)
+                        val pumpInteraction = remember { MutableInteractionSource() }
+                        Text(
+                            text = "Open in Pump →",
+                            style = NoopType.caption,
+                            color = Palette.accent,
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier
+                                .clip(pumpChipShape)
+                                .background(Palette.accentMuted)
+                                .border(1.dp, Palette.accent.copy(alpha = 0.4f), pumpChipShape)
+                                .liquidPress(pumpInteraction)
+                                .clickable(interactionSource = pumpInteraction, indication = null) {
+                                    openPumpCoach(context, input.takeIf { it.isNotBlank() })
+                                }
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                                .semantics { contentDescription = "Open in Pump Coach" },
+                        )
+                    }
+                }
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // The pill takes the flexible space (ellipsizing a long model id); the actions
+                    // keep their intrinsic single-line width so they can never be squeezed into a vertical
+                    // stack (#1074).
+                    StatePill(
+                        title = uiString(R.string.l10n_coach_screen_provider_displayname_model_8b39f761, provider.displayName, model),
+                        tone = StrandTone.Accent, showsDot = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    val settingsInteraction = remember { MutableInteractionSource() }
+                    Icon(
+                        Icons.Filled.Tune,
+                        contentDescription = uiString(R.string.coach_settings),
+                        tint = Palette.textSecondary,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .liquidPress(settingsInteraction)
+                            .clickable(interactionSource = settingsInteraction, indication = null) { onOpenSettings() }
+                            .padding(6.dp)
+                            .size(20.dp),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    val keyInteraction = remember { MutableInteractionSource() }
+                    Icon(
+                        Icons.Filled.Edit,
+                        contentDescription = uiString(R.string.coach_key_rejected_action),
+                        tint = Palette.textSecondary,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .liquidPress(keyInteraction)
+                            .clickable(interactionSource = keyInteraction, indication = null) {
+                                showKeyEditor = !showKeyEditor
+                                if (!showKeyEditor) keyFix = ""
+                            }
+                            .padding(6.dp)
+                            .size(20.dp),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    val disconnectInteraction = remember { MutableInteractionSource() }
+                    Text(
+                        uiString(R.string.l10n_coach_screen_disconnect_ed28e068),
+                        style = NoopType.caption,
+                        color = Palette.textSecondary,
+                        maxLines = 1,
+                        softWrap = false,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .liquidPress(disconnectInteraction)
+                            .clickable(interactionSource = disconnectInteraction, indication = null) { vm.disconnect(context) }
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                            .semantics { contentDescription = uiString(R.string.l10n_coach_screen_disconnect_provider_fa13625c) },
+                    )
+                }
             }
         }
 

@@ -16,6 +16,8 @@ import com.noop.data.CoachMessageRow
 import com.noop.data.JournalEntry
 import com.noop.data.WhoopDatabase
 import com.noop.data.WhoopRepository
+import com.noop.sync.CoachSyncClient
+import com.noop.sync.CoachSyncPrefs
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -203,15 +205,27 @@ class CoachViewModel(app: Application) : AndroidViewModel(app) {
 
     // MARK: - Key gate
 
+    /** True when Cloud Coach Sync (`coach-mcp` Mistral Managed Agent) is enabled and configured. */
+    fun isCloudCoachActive(ctx: Context): Boolean = CoachSyncPrefs.isConfigured(ctx)
+
+    private val _cloudCoachModel = MutableStateFlow("mistral-medium-latest")
+    /** Last model reported by `POST /coach/chat` when Cloud Coach mode is active. */
+    val cloudCoachModel: StateFlow<String> = _cloudCoachModel.asStateFlow()
+
+    /** Set to true when the user taps New Chat / Clear conversation so the next Cloud Coach turn sends `resetConversation = true`. */
+    private var pendingCloudCoachReset: Boolean = false
+
     /** True when a non-blank API key is stored. The UI shows the chat only when this is true. */
     fun hasKey(ctx: Context): Boolean = AiKeyStore.hasKey(ctx)
 
     /**
-     * True once the coach can actually send: a stored key for the cloud providers, or, for the
-     * Custom (local) provider, a committed base URL (a key is optional there). Gates setup vs. chat.
+     * True once the coach can actually send: Cloud Coach (`coach-mcp`) is enabled and configured,
+     * OR a stored key for the BYOK cloud providers, OR for the Custom (local) provider a committed base URL.
+     * Gates setup vs. chat.
      */
     fun isConfigured(ctx: Context): Boolean =
-        if (_provider.value == AiProvider.CUSTOM) _customConnected.value else hasKey(ctx)
+        isCloudCoachActive(ctx) ||
+            (if (_provider.value == AiProvider.CUSTOM) _customConnected.value else hasKey(ctx))
 
     // MARK: - Selection mutators
 
@@ -472,6 +486,62 @@ class CoachViewModel(app: Application) : AndroidViewModel(app) {
         var accumulated = ""
 
         viewModelScope.launch {
+            if (CoachSyncPrefs.isConfigured(appCtx)) {
+                try {
+                    val baseUrl = CoachSyncPrefs.url(appCtx)
+                    val token = CoachSyncPrefs.token(appCtx)
+                    val shouldReset = pendingCloudCoachReset
+                    val currentConvId = if (shouldReset) {
+                        null
+                    } else {
+                        CoachSyncPrefs.cloudCoachConversationId(appCtx)
+                    }
+                    val result = CoachSyncClient.sendCloudCoachChat(
+                        baseUrl = baseUrl,
+                        token = token,
+                        message = question,
+                        conversationId = currentConvId,
+                        resetConversation = shouldReset,
+                    )
+                    result.fold(
+                        onSuccess = { reply ->
+                            pendingCloudCoachReset = false
+                            if (!reply.conversationId.isNullOrBlank()) {
+                                CoachSyncPrefs.setCloudCoachConversationId(appCtx, reply.conversationId)
+                            }
+                            if (reply.model.isNotBlank()) {
+                                _cloudCoachModel.value = reply.model
+                            }
+                            val clean = reply.reply.trim()
+                            _messages.value = _messages.value.map { msg ->
+                                if (msg.id == placeholderId) {
+                                    ChatMsg(
+                                        id = placeholderId,
+                                        role = "assistant",
+                                        text = if (clean.isEmpty()) {
+                                            getApplication<Application>().getString(R.string.coach_no_reply)
+                                        } else {
+                                            clean
+                                        },
+                                    )
+                                } else {
+                                    msg
+                                }
+                            }
+                        },
+                        onFailure = { err ->
+                            _messages.value = _messages.value.filterNot { it.id == placeholderId }
+                            _error.value = err.message ?: "Could not reach Cloud Coach. Please try again."
+                            _keyRejected.value = false
+                        },
+                    )
+                } finally {
+                    _sending.value = false
+                    persistMessages()
+                }
+                return@launch
+            }
+
             try {
                 // Re-read the stored grant rather than trusting the copy this instance was built
                 // with. Consent is editable from CoachSettingsScreen, and the system prompt already
@@ -599,10 +669,14 @@ class CoachViewModel(app: Application) : AndroidViewModel(app) {
     /** The Coach toolbar's "Clear conversation" action: wipes both the in-memory transcript and the
      *  persisted table. */
     fun clearConversation() {
+        val appCtx = getApplication<Application>().applicationContext
         _messages.value = emptyList()
         // Goes with the transcript, as in [clearKey] and [disconnect]: a field claiming the empty
         // transcript belongs to some past day would not be true.
         conversationDay = null
+        _error.value = null
+        pendingCloudCoachReset = true
+        CoachSyncPrefs.clearCloudCoachConversationId(appCtx)
         viewModelScope.launch { runCatching { coachDao.clearCoachMessages() } }
     }
 
