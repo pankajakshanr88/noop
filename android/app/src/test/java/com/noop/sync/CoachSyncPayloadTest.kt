@@ -2,6 +2,7 @@ package com.noop.sync
 
 import com.noop.widget.HrPoint
 import com.noop.widget.StressPoint
+import com.noop.data.WorkoutRow
 import com.noop.widget.WidgetSnapshot
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -523,4 +524,70 @@ class CoachSyncPayloadTest {
         assertTrue(CoachSyncClient.parseChatResponse("""{"ok":true,"reply":"   "}""").isFailure)
         assertTrue(CoachSyncClient.parseChatResponse("").isFailure)
     }
+
+    @Test
+    fun `reconcilePumpWorkouts updates stale HC duration and inserts missing Pump workout`() {
+        val pullJson = """
+            {
+              "ok": true,
+              "recentWorkouts": [
+                {
+                  "id": "w_25",
+                  "date": "2026-11-25",
+                  "startTime": "2026-11-25T13:00:00Z",
+                  "endTime": "2026-11-25T14:00:00Z",
+                  "title": "Chest & Back A (Antagonist Thickness)",
+                  "durationSec": 3600,
+                  "totalSets": 16,
+                  "totalVolumeKg": 5747,
+                  "exercises": [{"name": "Bench Press"}, {"name": "Row"}]
+                },
+                {
+                  "id": "w_23",
+                  "date": "2026-11-23",
+                  "title": "Legs & Core B (Unilateral Leg Sweep)",
+                  "durationSec": 2700,
+                  "totalSets": 4,
+                  "totalVolumeKg": 907,
+                  "exercises": [{"name": "Bulgarian Split Squat"}, {"name": "Plank"}]
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val parsed = CoachSyncClient.parsePullWorkoutsResponse(pullJson)
+        assertEquals(2, parsed.size)
+
+        val zone = java.time.ZoneId.of("UTC")
+        val existing23Start = java.time.Instant.parse("2026-11-23T12:54:00Z").epochSecond
+        val existingHc = listOf(
+            WorkoutRow(
+                deviceId = "health-connect",
+                startTs = existing23Start,
+                endTs = existing23Start + 9300L,
+                sport = "Legs & Core B (Unilateral Leg Sweep)",
+                source = "health-connect",
+                durationS = 9300.0,
+                energyKcal = 181.0,
+                avgHr = 118,
+                notes = "Logged with Pump",
+            )
+        )
+
+        val reconciled = CoachSyncClient.reconcilePumpWorkouts(parsed, existingHc, zone)
+        assertEquals(2, reconciled.size)
+
+        val nov25 = reconciled.first { it.sport.startsWith("Chest & Back A") }
+        assertEquals(3600.0, nov25.durationS!!, 0.1)
+        assertEquals(java.time.Instant.parse("2026-11-25T13:00:00Z").epochSecond, nov25.startTs)
+        assertTrue(nov25.notes!!.contains("Logged with Pump"))
+
+        val nov23 = reconciled.first { it.sport.startsWith("Legs & Core B") }
+        assertEquals(existing23Start, nov23.startTs)
+        assertEquals(existing23Start + 2700L, nov23.endTs)
+        assertEquals(2700.0, nov23.durationS!!, 0.1)
+        assertEquals(181.0, nov23.energyKcal!!, 0.1)
+        assertEquals(118, nov23.avgHr)
+    }
+
 }

@@ -1,5 +1,6 @@
 package com.noop.sync
 
+import com.noop.data.WorkoutRow
 import com.noop.widget.WidgetSnapshot
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -690,4 +691,173 @@ object CoachSyncClient {
             readTimeoutMs = readTimeoutMs,
         )
     }
+
+    data class CloudPumpWorkout(
+        val id: String,
+        val date: String,
+        val startTime: String?,
+        val endTime: String?,
+        val title: String,
+        val durationSec: Int,
+        val totalSets: Int,
+        val totalVolumeKg: Double,
+        val exerciseCount: Int,
+    )
+
+    fun pullEndpointUrl(baseUrl: String): String =
+        "${baseUrl.trim().trimEnd('/')}/sync/pull"
+
+    fun parsePullWorkoutsResponse(jsonText: String): List<CloudPumpWorkout> {
+        val root = JSONObject(jsonText)
+        val arr = root.optJSONArray("recentWorkouts") ?: return emptyList()
+        val out = ArrayList<CloudPumpWorkout>(arr.length())
+        for (i in 0 until arr.length()) {
+            val obj = arr.optJSONObject(i) ?: continue
+            val id = obj.optString("id", "").trim()
+            val date = obj.optString("date", "").trim()
+            val title = obj.optString("title", "Workout").trim().ifEmpty { "Workout" }
+            if (id.isEmpty() || date.isEmpty()) continue
+            val startTime = obj.optString("startTime", "").trim().ifEmpty { null }
+            val endTime = obj.optString("endTime", "").trim().ifEmpty { null }
+            val durationSec = obj.optInt("durationSec", 0).coerceAtLeast(0)
+            val totalSets = obj.optInt("totalSets", 0).coerceAtLeast(0)
+            val totalVolumeKg = obj.optDouble("totalVolumeKg", 0.0).takeIf { !it.isNaN() } ?: 0.0
+            val exercisesArr = obj.optJSONArray("exercises")
+            val exerciseCount = exercisesArr?.length() ?: obj.optInt("exerciseCount", 0).coerceAtLeast(0)
+            out.add(
+                CloudPumpWorkout(
+                    id = id,
+                    date = date,
+                    startTime = startTime,
+                    endTime = endTime,
+                    title = title,
+                    durationSec = durationSec,
+                    totalSets = totalSets,
+                    totalVolumeKg = totalVolumeKg,
+                    exerciseCount = exerciseCount,
+                )
+            )
+        }
+        return out
+    }
+
+    suspend fun fetchPumpWorkoutsFromCloud(
+        baseUrl: String,
+        bearerToken: String,
+        timeoutMs: Int = 8_000,
+    ): Result<List<CloudPumpWorkout>> = withContext(Dispatchers.IO) {
+        val cleanUrl = baseUrl.trim().trimEnd('/')
+        val cleanToken = bearerToken.trim()
+        if (cleanUrl.isEmpty() || cleanToken.isEmpty()) {
+            return@withContext Result.failure(IllegalArgumentException("Cloud Coach URL and token are required."))
+        }
+        var conn: HttpURLConnection? = null
+        try {
+            val endpoint = URL(pullEndpointUrl(cleanUrl))
+            conn = (endpoint.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = timeoutMs
+                readTimeout = timeoutMs
+                setRequestProperty("Accept", "application/json")
+                setRequestProperty("Authorization", "Bearer $cleanToken")
+            }
+            val code = conn.responseCode
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val body = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+            if (code in 200..299) {
+                Result.success(parsePullWorkoutsResponse(body))
+            } else {
+                Result.failure(IllegalStateException("Pull HTTP $code"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        } finally {
+            conn?.disconnect()
+        }
+    }
+
+    /**
+     * Reconcile Pump workouts from Supabase against existing Health Connect rows in NOOP:
+     * - Updates stale durations/notes in-place on matching rows (preserving WHOOP HR/kcal/startTs).
+     * - Inserts missing Pump sessions so NOOP Latest Workouts stays 100% in sync with Pump.
+     */
+    fun reconcilePumpWorkouts(
+        cloudWorkouts: List<CloudPumpWorkout>,
+        existingHcWorkouts: List<WorkoutRow>,
+        zoneId: java.time.ZoneId = java.time.ZoneId.systemDefault(),
+    ): List<WorkoutRow> {
+        if (cloudWorkouts.isEmpty()) return emptyList()
+        val fmtVol = { kg: Double ->
+            val rounded = kotlin.math.round(kg).toLong()
+            java.text.NumberFormat.getIntegerInstance(java.util.Locale.US).format(rounded)
+        }
+        val toLocalDate = { epochSec: Long ->
+            java.time.Instant.ofEpochSecond(epochSec).atZone(zoneId).toLocalDate().toString()
+        }
+        val parseIsoSec = { iso: String? ->
+            iso?.let { runCatching { java.time.Instant.parse(it).epochSecond }.getOrNull() }
+        }
+        val usedStartTs = mutableSetOf<Long>()
+        val result = ArrayList<WorkoutRow>(cloudWorkouts.size)
+
+        for (cw in cloudWorkouts) {
+            if (cw.durationSec <= 0) continue
+            val parsedStart = parseIsoSec(cw.startTime)
+            val parsedEnd = parseIsoSec(cw.endTime)
+            val notes = buildString {
+                if (cw.exerciseCount > 0) append("${cw.exerciseCount} exercises · ")
+                append("${cw.totalSets} sets · ${fmtVol(cw.totalVolumeKg)} kg volume · Logged with Pump")
+            }
+
+            // Match existing HC workout on same date + same title (case-insensitive) OR within 2h of startTime
+            val match = existingHcWorkouts.firstOrNull { row ->
+                row.startTs !in usedStartTs && (
+                    (toLocalDate(row.startTs) == cw.date &&
+                        row.sport.trim().equals(cw.title.trim(), ignoreCase = true)) ||
+                    (parsedStart != null && kotlin.math.abs(row.startTs - parsedStart) <= 7200L)
+                )
+            }
+
+            if (match != null) {
+                usedStartTs.add(match.startTs)
+                val newEnd = match.startTs + cw.durationSec.toLong()
+                result.add(
+                    match.copy(
+                        endTs = newEnd,
+                        sport = cw.title,
+                        durationS = cw.durationSec.toDouble(),
+                        notes = notes,
+                    )
+                )
+            } else {
+                val baseStart = parsedStart ?: runCatching {
+                    java.time.LocalDate.parse(cw.date)
+                        .atTime(12, 0)
+                        .atZone(zoneId)
+                        .toEpochSecond()
+                }.getOrDefault(System.currentTimeMillis() / 1000L - cw.durationSec)
+                var uniqueStart = baseStart
+                while (uniqueStart in usedStartTs) uniqueStart += 60L
+                usedStartTs.add(uniqueStart)
+                val endTs = if (parsedStart != null && parsedEnd != null && parsedEnd > parsedStart) {
+                    parsedEnd
+                } else {
+                    uniqueStart + cw.durationSec.toLong()
+                }
+                result.add(
+                    WorkoutRow(
+                        deviceId = "health-connect",
+                        startTs = uniqueStart,
+                        endTs = endTs,
+                        sport = cw.title,
+                        source = "health-connect",
+                        durationS = cw.durationSec.toDouble(),
+                        notes = notes,
+                    )
+                )
+            }
+        }
+        return result
+    }
+
 }

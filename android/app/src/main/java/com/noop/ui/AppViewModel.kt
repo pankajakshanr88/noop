@@ -2895,6 +2895,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         _coachSyncLastAtMs.value = finishedAt
                         _coachSyncLastStatus.value = status
                         coachNudgeLastFetchedAtMs.clear()
+                        // Pull Pump's authoritative workouts & edited durations from Supabase
+                        viewModelScope.launch(Dispatchers.IO) {
+                            runCatching {
+                                val pulled = CoachSyncClient.fetchPumpWorkoutsFromCloud(url, token).getOrNull()
+                                if (!pulled.isNullOrEmpty()) {
+                                    val nowSec = System.currentTimeMillis() / 1000L
+                                    val existing = repo.workouts("health-connect", nowSec - 45L * 86400L, nowSec + 86400L)
+                                    val reconciled = CoachSyncClient.reconcilePumpWorkouts(pulled, existing)
+                                    if (reconciled.isNotEmpty()) {
+                                        repo.upsertWorkouts(reconciled)
+                                        todayFooterLoadedSig = 0
+                                    }
+                                }
+                            }
+                        }
                     }
                     is CoachSyncClient.SyncResult.Failure -> {
                         val status = "Failed: ${result.message}"
