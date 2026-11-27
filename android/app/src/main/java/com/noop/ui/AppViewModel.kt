@@ -2874,7 +2874,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 val snapshot = currentCoachWidgetSnapshot()
-                val payload = CoachSyncClient.buildPayload(snapshot = snapshot)
+                val basePayload = CoachSyncClient.buildPayload(snapshot = snapshot)
+                val payload = withContext(Dispatchers.IO) {
+                    runCatching {
+                        val nowSec = System.currentTimeMillis() / 1000L
+                        val imported = repo.sleepSessionsUnion(activeStrapId, nowSec - 7L * 86400L, nowSec + 3600L)
+                        val computed = repo.computedSleepSessionsUnion(activeStrapId, nowSec - 7L * 86400L, nowSec + 3600L)
+                        val latestSession = (imported + computed).maxByOrNull { it.endTs }
+                        val days = recentDays.value
+                        val latestDaily = days.lastOrNull()
+                        val recentSleepDays = days.takeLast(7).mapNotNull { it.totalSleepMin }
+                        val debtMin = if (recentSleepDays.isNotEmpty()) {
+                            recentSleepDays.sumOf { (480.0 - it).coerceAtLeast(0.0) }
+                        } else null
+                        CoachSyncClient.enrichPayloadWithSleep(
+                            base = basePayload,
+                            session = latestSession,
+                            daily = latestDaily,
+                            sleepDebtMin = debtMin,
+                        )
+                    }.getOrDefault(basePayload)
+                }
                 val result = withContext(Dispatchers.IO) {
                     CoachSyncClient.postNoopVitals(
                         baseUrl = url,

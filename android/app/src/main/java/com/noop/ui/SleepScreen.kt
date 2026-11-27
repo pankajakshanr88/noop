@@ -747,6 +747,17 @@ fun SleepScreen(
             // keyed reorderable item so the whole card (incl. its top spacer) lifts and drops as a unit.
             // #sleep-layout: persist the live hold-to-drag reorder when the gesture drops (the in-memory
             // `sleepSectionOrder` already moved live in the frame loop; this writes it through).
+            if (nightOffset == 0) {
+                item(key = "sleep_coach_nudge") {
+                    Column {
+                        Spacer(Modifier.height(Metrics.selectorTopUp))
+                        CoachNudgeSection(
+                            vm = vm,
+                            screen = "sleep",
+                        )
+                    }
+                }
+            }
             val persistSleepOrder = { SleepLayoutPrefs.setOrder(context, sleepSectionOrder) }
             sleepSectionOrder.filterNot { it in hiddenSections }.forEach { section ->
               val k = SLEEP_SECTION_KEY_PREFIX + section.raw

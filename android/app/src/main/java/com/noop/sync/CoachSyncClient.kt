@@ -1,5 +1,7 @@
 package com.noop.sync
 
+import com.noop.data.DailyMetric
+import com.noop.data.SleepSession
 import com.noop.data.WorkoutRow
 import com.noop.widget.WidgetSnapshot
 import kotlinx.coroutines.Dispatchers
@@ -33,6 +35,17 @@ object CoachSyncClient {
         val batteryPct: Int?,
         val connected: Boolean,
         val source: String = "noop",
+        val bedtimeIso: String? = null,
+        val wakeIso: String? = null,
+        val sleepDeepMin: Double? = null,
+        val sleepRemMin: Double? = null,
+        val sleepLightMin: Double? = null,
+        val sleepAwakeMin: Double? = null,
+        val sleepEfficiencyPct: Double? = null,
+        val sleepDebtMin: Double? = null,
+        val sleepConsistencyPct: Double? = null,
+        val respRateBpm: Double? = null,
+        val skinTempDevC: Double? = null,
     )
 
     data class CoachNudgeAction(
@@ -110,6 +123,11 @@ object CoachSyncClient {
                 label = "Build Next Workout",
                 type = "pump_coach",
                 prompt = "${contextPrefix}Based on my recent Pump workouts, weekly muscle balance, and NOOP recovery, build my next optimal workout session.",
+            )
+            "sleep" -> CoachNudgeAction(
+                label = "Plan Tonight in Coach",
+                type = "pump_coach",
+                prompt = "${contextPrefix}Based on my last night's sleep architecture, sleep debt, and today's Pump training load, what should my bedtime target and wind-down plan be tonight?",
             )
             else -> CoachNudgeAction(
                 label = "Open in Pump",
@@ -359,6 +377,17 @@ object CoachSyncClient {
         append("\"batteryPct\":").append(payload.batteryPct?.toString() ?: "null").append(',')
         append("\"connected\":").append(payload.connected).append(',')
         append("\"source\":").append(escapeJsonString(payload.source))
+        payload.bedtimeIso?.let { append(",\"bedtimeIso\":").append(escapeJsonString(it)) }
+        payload.wakeIso?.let { append(",\"wakeIso\":").append(escapeJsonString(it)) }
+        payload.sleepDeepMin?.let { append(",\"sleepDeepMin\":").append(it) }
+        payload.sleepRemMin?.let { append(",\"sleepRemMin\":").append(it) }
+        payload.sleepLightMin?.let { append(",\"sleepLightMin\":").append(it) }
+        payload.sleepAwakeMin?.let { append(",\"sleepAwakeMin\":").append(it) }
+        payload.sleepEfficiencyPct?.let { append(",\"sleepEfficiencyPct\":").append(it) }
+        payload.sleepDebtMin?.let { append(",\"sleepDebtMin\":").append(it) }
+        payload.sleepConsistencyPct?.let { append(",\"sleepConsistencyPct\":").append(it) }
+        payload.respRateBpm?.let { append(",\"respRateBpm\":").append(it) }
+        payload.skinTempDevC?.let { append(",\"skinTempDevC\":").append(it) }
         append('}')
     }
 
@@ -858,6 +887,86 @@ object CoachSyncClient {
             }
         }
         return result
+    }
+
+
+    /**
+     * Enrich a base [NoopSyncPayload] with compact nightly sleep architecture scalars from
+     * [SleepSession] and [DailyMetric] (never raw epoch arrays or BLE streams).
+     */
+    fun enrichPayloadWithSleep(
+        base: NoopSyncPayload,
+        session: SleepSession?,
+        daily: DailyMetric?,
+        sleepDebtMin: Double? = null,
+        sleepConsistencyPct: Double? = null,
+    ): NoopSyncPayload {
+        var deepMin: Double? = null
+        var remMin: Double? = null
+        var lightMin: Double? = null
+        var awakeMin: Double? = null
+
+        val rawStages = session?.stagesJSON?.trim().orEmpty()
+        if (rawStages.startsWith("[")) {
+            runCatching {
+                val arr = org.json.JSONArray(rawStages)
+                var dSec = 0L; var rSec = 0L; var lSec = 0L; var aSec = 0L
+                for (i in 0 until arr.length()) {
+                    val seg = arr.optJSONObject(i) ?: continue
+                    val start = seg.optLong("start", 0L)
+                    val end = seg.optLong("end", 0L)
+                    val dur = (end - start).coerceAtLeast(0L)
+                    when (seg.optString("stage", "").trim().lowercase()) {
+                        "deep", "sws" -> dSec += dur
+                        "rem" -> rSec += dur
+                        "light" -> lSec += dur
+                        "wake", "awake" -> aSec += dur
+                    }
+                }
+                if (dSec + rSec + lSec + aSec > 0L) {
+                    deepMin = kotlin.math.round(dSec / 6.0) / 10.0
+                    remMin = kotlin.math.round(rSec / 6.0) / 10.0
+                    lightMin = kotlin.math.round(lSec / 6.0) / 10.0
+                    awakeMin = kotlin.math.round(aSec / 6.0) / 10.0
+                }
+            }
+        } else if (rawStages.startsWith("{")) {
+            runCatching {
+                val obj = JSONObject(rawStages)
+                if (obj.has("deep")) deepMin = kotlin.math.round(obj.optDouble("deep", 0.0) * 10.0) / 10.0
+                if (obj.has("rem")) remMin = kotlin.math.round(obj.optDouble("rem", 0.0) * 10.0) / 10.0
+                if (obj.has("light")) lightMin = kotlin.math.round(obj.optDouble("light", 0.0) * 10.0) / 10.0
+                if (obj.has("awake")) awakeMin = kotlin.math.round(obj.optDouble("awake", 0.0) * 10.0) / 10.0
+                else if (obj.has("wake")) awakeMin = kotlin.math.round(obj.optDouble("wake", 0.0) * 10.0) / 10.0
+            }
+        }
+
+        val bedtimeIso = session?.effectiveStartTs?.takeIf { it > 0L }?.let {
+            Instant.ofEpochSecond(it).toString()
+        }
+        val wakeIso = session?.endTs?.takeIf { it > 0L }?.let {
+            Instant.ofEpochSecond(it).toString()
+        }
+        val effPct = session?.efficiency?.let { e ->
+            val pct = if (e <= 1.0) e * 100.0 else e
+            kotlin.math.round(pct * 10.0) / 10.0
+        }
+        val resp = daily?.respRateBpm?.let { kotlin.math.round(it * 10.0) / 10.0 }
+        val skinDev = daily?.skinTempDevC?.let { kotlin.math.round(it * 100.0) / 100.0 }
+
+        return base.copy(
+            bedtimeIso = bedtimeIso ?: base.bedtimeIso,
+            wakeIso = wakeIso ?: base.wakeIso,
+            sleepDeepMin = deepMin ?: base.sleepDeepMin,
+            sleepRemMin = remMin ?: base.sleepRemMin,
+            sleepLightMin = lightMin ?: base.sleepLightMin,
+            sleepAwakeMin = awakeMin ?: base.sleepAwakeMin,
+            sleepEfficiencyPct = effPct ?: base.sleepEfficiencyPct,
+            sleepDebtMin = sleepDebtMin?.let { kotlin.math.round(it * 10.0) / 10.0 } ?: base.sleepDebtMin,
+            sleepConsistencyPct = sleepConsistencyPct?.let { kotlin.math.round(it * 10.0) / 10.0 } ?: base.sleepConsistencyPct,
+            respRateBpm = resp ?: base.respRateBpm,
+            skinTempDevC = skinDev ?: base.skinTempDevC,
+        )
     }
 
 }

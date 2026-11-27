@@ -2,6 +2,8 @@ package com.noop.sync
 
 import com.noop.widget.HrPoint
 import com.noop.widget.StressPoint
+import com.noop.data.DailyMetric
+import com.noop.data.SleepSession
 import com.noop.data.WorkoutRow
 import com.noop.widget.WidgetSnapshot
 import org.junit.Assert.assertEquals
@@ -588,6 +590,51 @@ class CoachSyncPayloadTest {
         assertEquals(2700.0, nov23.durationS!!, 0.1)
         assertEquals(181.0, nov23.energyKcal!!, 0.1)
         assertEquals(118, nov23.avgHr)
+    }
+
+
+    @Test
+    fun `enrichPayloadWithSleep serializes rich sleep architecture and sleep screen default action`() {
+        val base = CoachSyncClient.buildPayload(
+            snapshot = WidgetSnapshot(
+                recoveryPct = 68, restPct = 78, effortPct = 55,
+                hrvMs = 56, restingHr = 52, sleepMin = 400,
+                steps = 4500, batteryPct = 90, connected = true,
+            ),
+            syncedAt = "2026-11-27T14:00:00Z",
+            date = "2026-11-27",
+        )
+        val session = SleepSession(
+            deviceId = "my-whoop",
+            startTs = 1795756200L,
+            endTs = 1795780200L,
+            efficiency = 0.943,
+            stagesJSON = "{\"deep\":52.0,\"rem\":88.0,\"light\":260.0,\"awake\":24.0}",
+        )
+        val daily = DailyMetric(
+            deviceId = "my-whoop",
+            day = "2026-11-27",
+            respRateBpm = 16.8,
+            skinTempDevC = 0.12,
+        )
+        val enriched = CoachSyncClient.enrichPayloadWithSleep(
+            base = base,
+            session = session,
+            daily = daily,
+            sleepDebtMin = 45.0,
+            sleepConsistencyPct = 78.0,
+        )
+        val json = CoachSyncClient.toJson(enriched)
+        assertTrue(json.contains("\"sleepDeepMin\":52.0"))
+        assertTrue(json.contains("\"sleepRemMin\":88.0"))
+        assertTrue(json.contains("\"sleepEfficiencyPct\":94.3"))
+        assertTrue(json.contains("\"sleepDebtMin\":45.0"))
+        assertTrue(json.contains("\"respRateBpm\":16.8"))
+        assertTrue(json.contains("\"bedtimeIso\":"))
+
+        val action = CoachSyncClient.defaultActionForScreen("sleep")
+        assertEquals("pump_coach", action.type)
+        assertTrue(action.label.contains("Coach"))
     }
 
 }
